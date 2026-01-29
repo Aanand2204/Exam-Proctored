@@ -1,5 +1,4 @@
 import streamlit as st
-from admin import admin_view
 from student import student_view
 
 st.set_page_config(page_title="Proctored Exam System", layout="wide")
