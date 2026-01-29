@@ -64,7 +64,7 @@ def student_view():
         st.subheader("Configure Your Exam")
         with st.form("exam_config_form"):
             subject = st.text_input("Subject (e.g., Indian Geography, Modern History)", value="Indian Geography")
-            exam_name = st.selectbox("Target Exam", ["CDS", "NDA", "UPSC", "SSC CGL", "AFCAT", "JEE", "NEET"])
+            exam_name = st.selectbox("Target Exam", ["CDS", "NDA", "UPSC", "SSC CGL", "AFCAT", "JEE", "NEET", "MPSC", "BANK PO"])
             num_questions = st.number_input("Number of Questions", min_value=1, max_value=50, value=10)
             timer_minutes = st.number_input("Timer (Minutes)", min_value=1, max_value=180, value=1)
             
