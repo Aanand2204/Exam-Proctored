@@ -32,9 +32,16 @@ class QuestionGenerator:
         # Remove common phonetic LaTeX marks that AI sometimes uses for Indian scripts
         # like veda\bar{a}nta -> vedanta
         import re
-        cleaned = re.sub(r'\\bar\{([a-zA-Z])\}', r'\1', cleaned)
-        cleaned = re.sub(r'\\acute\{([a-zA-Z])\}', r'\1', cleaned)
-        cleaned = re.sub(r'\\grave\{([a-zA-Z])\}', r'\1', cleaned)
+        # Use [^}]* to catch any character (including unicode) inside the braces
+        cleaned = re.sub(r'\\bar\{([^}]*)\}', r'\1', cleaned)
+        cleaned = re.sub(r'\\acute\{([^}]*)\}', r'\1', cleaned)
+        cleaned = re.sub(r'\\grave\{([^}]*)\}', r'\1', cleaned)
+        cleaned = re.sub(r'\\ddot\{([^}]*)\}', r'\1', cleaned)
+        cleaned = re.sub(r'\\hat\{([^}]*)\}', r'\1', cleaned)
+        cleaned = re.sub(r'\\tilde\{([^}]*)\}', r'\1', cleaned)
+        
+        # Sometimes it might just be \bar{a} without double backslash in the raw string
+        cleaned = re.sub(r'\\bar{([^}]*)}', r'\1', cleaned)
         
         return cleaned
 
