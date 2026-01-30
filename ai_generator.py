@@ -29,6 +29,13 @@ class QuestionGenerator:
         # (LLMs often over-escape in JSON output)
         cleaned = text.replace("\\\\", "\\")
         
+        # Remove common phonetic LaTeX marks that AI sometimes uses for Indian scripts
+        # like veda\bar{a}nta -> vedanta
+        import re
+        cleaned = re.sub(r'\\bar\{([a-zA-Z])\}', r'\1', cleaned)
+        cleaned = re.sub(r'\\acute\{([a-zA-Z])\}', r'\1', cleaned)
+        cleaned = re.sub(r'\\grave\{([a-zA-Z])\}', r'\1', cleaned)
+        
         return cleaned
 
     def generate_questions(self, subject, exam_name, num_questions):
@@ -127,9 +134,10 @@ class QuestionGenerator:
             
             IMPORTANT: 
             1. Translate everything EXCEPT LaTeX formulas/expressions (e.g., $E=mc^2$). Keep LaTeX EXACTLY as is, including tags like $ or $$.
-            2. Maintain the EXACT same JSON structure.
-            3. Ensure the 'correct_option' field remains (A, B, C, or D).
-            4. Translate 'question_text', 'option_a', 'option_b', 'option_c', 'option_d', 'explanation', and 'appeared_in'.
+            2. DO NOT use LaTeX phonetic marks or macrons (like \bar{}, \acute{}, etc.) for the translated script. Use standard script characters.
+            3. Maintain the EXACT same JSON structure.
+            4. Ensure the 'correct_option' field remains (A, B, C, or D).
+            5. Translate 'question_text', 'option_a', 'option_b', 'option_c', 'option_d', 'explanation', and 'appeared_in'.
             
             Questions to translate:
             {questions_json}

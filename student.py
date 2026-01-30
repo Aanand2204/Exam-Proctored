@@ -407,16 +407,10 @@ def student_view():
 
     @st.fragment
     def exam_interface():
-        # --- Language Switcher ---
-        col1, col2 = st.columns([3, 1])
-        with col2:
+        # --- Language Switcher Callback ---
+        def on_language_change():
+            new_lang = st.session_state.lang_switcher
             current_lang = st.session_state.get("current_language", "English")
-            new_lang = st.selectbox(
-                "Change Language", 
-                ["English", "Hindi", "Marathi", "Bengali", "Tamil", "Telugu", "Gujarati", "Kannada", "Malayalam", "Punjabi"],
-                index=["English", "Hindi", "Marathi", "Bengali", "Tamil", "Telugu", "Gujarati", "Kannada", "Malayalam", "Punjabi"].index(current_lang),
-                key="lang_switcher"
-            )
             
             if new_lang != current_lang:
                 with st.spinner("Translating..."):
@@ -426,7 +420,17 @@ def student_view():
                     else:
                         st.session_state.exam_questions = generator.translate_questions(st.session_state.original_questions, new_lang)
                     st.session_state.current_language = new_lang
-                    st.rerun()
+
+        # --- Language Switcher UI ---
+        col1, col2 = st.columns([3, 1])
+        with col2:
+            st.selectbox(
+                "Change Language", 
+                ["English", "Hindi", "Marathi", "Bengali", "Tamil", "Telugu", "Gujarati", "Kannada", "Malayalam", "Punjabi"],
+                index=["English", "Hindi", "Marathi", "Bengali", "Tamil", "Telugu", "Gujarati", "Kannada", "Malayalam", "Punjabi"].index(st.session_state.get("current_language", "English")),
+                key="lang_switcher",
+                on_change=on_language_change
+            )
 
         st.divider()
         responses = st.session_state.student_responses
