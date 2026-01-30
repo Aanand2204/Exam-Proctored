@@ -30,18 +30,20 @@ class QuestionGenerator:
         cleaned = text.replace("\\\\", "\\")
         
         # Remove common phonetic LaTeX marks that AI sometimes uses for Indian scripts
-        # like veda\bar{a}nta -> vedanta
+        # patterns like: \bar{ā}, \bar{s}, \bar s, \bar a, etc.
         import re
-        # Use [^}]* to catch any character (including unicode) inside the braces
-        cleaned = re.sub(r'\\bar\{([^}]*)\}', r'\1', cleaned)
-        cleaned = re.sub(r'\\acute\{([^}]*)\}', r'\1', cleaned)
-        cleaned = re.sub(r'\\grave\{([^}]*)\}', r'\1', cleaned)
-        cleaned = re.sub(r'\\ddot\{([^}]*)\}', r'\1', cleaned)
-        cleaned = re.sub(r'\\hat\{([^}]*)\}', r'\1', cleaned)
-        cleaned = re.sub(r'\\tilde\{([^}]*)\}', r'\1', cleaned)
         
-        # Sometimes it might just be \bar{a} without double backslash in the raw string
-        cleaned = re.sub(r'\\bar{([^}]*)}', r'\1', cleaned)
+        # Pass 1: Handle braced patterns: \bar{a} -> a
+        cleaned = re.sub(r'\\(bar|acute|grave|ddot|hat|tilde|check|breve|dot|vec)\{([^}]*)\}', r'\2', cleaned)
+        
+        # Pass 2: Handle unbraced patterns: \bar a -> a (but only for single characters to avoid breaking math)
+        # We only do this for characters often found in phonetic romanization
+        cleaned = re.sub(r'\\(bar|acute|grave|ddot|hat|tilde|check|breve|dot|vec)\s+([a-zA-Z])', r'\2', cleaned)
+        
+        # Pass 3: Specifically target the user's reported error cases
+        cleaned = cleaned.replace("\\bar{ā}", "ā")
+        cleaned = cleaned.replace("\\bar{s}", "s")
+        cleaned = cleaned.replace("\\bar{ū}", "ū")
         
         return cleaned
 
@@ -141,7 +143,7 @@ class QuestionGenerator:
             
             IMPORTANT: 
             1. Translate everything EXCEPT LaTeX formulas/expressions (e.g., $E=mc^2$). Keep LaTeX EXACTLY as is, including tags like $ or $$.
-            2. DO NOT use LaTeX phonetic marks or macrons (like \bar{}, \acute{}, etc.) for the translated script. Use standard script characters.
+            2. CRITICAL: NEVER use LaTeX markers like \bar{{}}, \acute{{}}, or \bar{{s}} for phonetic romanization or Indian language terms. Write the words in their natural local script (Hindi, Marathi, etc.) or plain English.
             3. Maintain the EXACT same JSON structure.
             4. Ensure the 'correct_option' field remains (A, B, C, or D).
             5. Translate 'question_text', 'option_a', 'option_b', 'option_c', 'option_d', 'explanation', and 'appeared_in'.

@@ -405,26 +405,34 @@ def student_view():
     if "student_responses" not in st.session_state:
         st.session_state.student_responses = {}
 
-    # --- Language Switcher (OUTSIDE fragment for deployment reliability) ---
+    # --- Language Switcher (Enhanced for Deployment Stability) ---
+    if "current_language" not in st.session_state:
+        st.session_state.current_language = st.session_state.exam_config.get("original_language", "English")
+
     col1, col2 = st.columns([3, 1])
     with col2:
-        current_lang = st.session_state.get("current_language", "English")
         langs = ["English", "Hindi", "Marathi", "Bengali", "Tamil", "Telugu", "Gujarati", "Kannada", "Malayalam", "Punjabi"]
-        new_lang = st.selectbox(
+        # Use selection as the source of truth
+        selected_lang = st.selectbox(
             "Change Language", 
             langs,
-            index=langs.index(current_lang) if current_lang in langs else 0,
-            key="lang_switcher_main"
+            index=langs.index(st.session_state.current_language) if st.session_state.current_language in langs else 0,
+            key="lang_selector_widget"
         )
         
-        if new_lang != current_lang:
-            with st.spinner(f"Translating to {new_lang}..."):
+        # Only trigger translation if the selection differs from what's currently active in the UI
+        if selected_lang != st.session_state.current_language:
+            placeholder = st.empty()
+            with placeholder.container():
+                st.info(f"🔄 Switching to {selected_lang}...")
                 generator = QuestionGenerator()
-                if new_lang == "English":
+                if selected_lang == "English":
                     st.session_state.exam_questions = st.session_state.original_questions
                 else:
-                    st.session_state.exam_questions = generator.translate_questions(st.session_state.original_questions, new_lang)
-                st.session_state.current_language = new_lang
+                    st.session_state.exam_questions = generator.translate_questions(st.session_state.original_questions, selected_lang)
+                st.session_state.current_language = selected_lang
+                st.success("✅ Translated!")
+                time.sleep(0.5) 
                 st.rerun()
 
     st.divider()
