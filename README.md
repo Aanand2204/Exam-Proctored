@@ -44,10 +44,4 @@ A modern, dynamic exam system built with Streamlit, Groq (Llama 3.3), and LangCh
    streamlit run app.py
    ```
 
-## 🌐 Deployment
-
-This app is ready for deployment on **Streamlit Cloud**:
-1. Connect your GitHub repository to Streamlit Cloud.
-2. Add your `.env` variables (MONGO_URI, GROQ_API_KEY, etc.) to the **Secrets** section of your Streamlit app settings.
-3. Deploy!
 
