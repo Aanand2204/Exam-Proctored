@@ -62,11 +62,57 @@ def student_view():
     # 2. Exam Configuration
     if "exam_config" not in st.session_state:
         st.subheader("Configure Your Exam")
+        
+        # 1. Target Exam Selection (OUTSIDE form to trigger reruns)
+        EXAM_SUBJECTS = {
+            "UPSC CSE": ["Ancient History", "Medieval History", "Modern History", "Geography", "Polity", "Economy", "Science & Tech", "Environment", "CSAT", "International Relations", "Current Affairs"],
+            "CDS": ["Indian History", "Geography", "English", "Mathematics", "General Science", "Current Affairs", "Indian Polity"],
+            "NDA": ["Mathematics", "English", "Physics", "Chemistry", "General Science", "History & Freedom Movement", "Geography", "Current Events"],
+            "SSC CGL": ["Quantitative Aptitude", "General Intelligence & Reasoning", "English Comprehension", "General Awareness", "Statistics", "General Studies (Finance & Economics)"],
+            "SBI PO": ["Quantitative Aptitude", "Reasoning Ability", "English Language", "General/Economy/Banking Awareness", "Computer Aptitude"],
+            "IBPS PO": ["Quantitative Aptitude", "Reasoning Ability", "English Language", "General Awareness", "Computer Aptitude"],
+            "JEE Main": ["Physics", "Chemistry", "Mathematics"],
+            "JEE Advanced": ["Physics", "Chemistry", "Mathematics"],
+            "NEET UG": ["Physics", "Chemistry", "Botany", "Zoology"],
+            "GATE": ["Engineering Mathematics", "General Aptitude", "Subject Specific (Civil/Mech/CS/EE/etc.)"],
+            "MPSC (Rajyaseva)": ["History", "Geography", "Polity", "Economy", "General Science", "Environment", "CSAT"],
+            "MPSC Combined": ["General Knowledge", "History", "Geography", "Economy", "Polity", "General Science", "Aptitude & Methods"],
+            "Police Bharti": ["General Knowledge", "Mathematics", "Intelligence Test", "Marathi Language"],
+            "AFCAT": ["General Awareness", "Verbal Ability in English", "Numerical Ability", "Reasoning & Military Aptitude"],
+            "CAT": ["Verbal Ability & Reading Comprehension", "Data Interpretation & Logical Reasoning", "Quantitative Ability"],
+            "CLAT": ["English Language", "Current Affairs (including GK)", "Legal Reasoning", "Logical Reasoning", "Quantitative Techniques"],
+            "CTET": ["Child Development & Pedagogy", "Language I", "Language II", "Mathematics", "Environmental Studies"],
+            "UGC NET": ["Teaching Aptitude", "Research Aptitude", "Reading Comprehension", "Communication", "Mathematical Reasoning", "Logical Reasoning", "Data Interpretation", "ICT", "People & Environment", "Higher Education System"]
+        }
+
+        all_exams = sorted(list(EXAM_SUBJECTS.keys())) + ["Other (Type below)"]
+        exam_name_selection = st.selectbox("1. Select Target Exam", all_exams, index=all_exams.index("UPSC CSE"))
+        
+        # Calculate dynamic subjects list based on selection
+        if exam_name_selection == "Other (Type below)":
+            subjects_list = ["Other (Type below)"]
+        else:
+            subjects_list = EXAM_SUBJECTS.get(exam_name_selection, ["General Studies"]) + ["Other (Type below)"]
+
         with st.form("exam_config_form"):
-            subject = st.text_input("Subject (e.g., Indian Geography, Modern History)", value="Indian Geography")
-            exam_name = st.selectbox("Target Exam", ["CDS", "NDA", "UPSC", "SSC CGL", "AFCAT", "JEE", "NEET", "MPSC", "BANK PO"])
+            # Handle "Other" Exam Name Entry
+            if exam_name_selection == "Other (Type below)":
+                exam_name = st.text_input("Enter Exam Name", placeholder="e.g., KPSC, TNPSC")
+            else:
+                exam_name = exam_name_selection
+
+            # 2. Subject Selection (Dynamic)
+            subject_selection = st.selectbox("2. Select Subject", subjects_list)
+            
+            if subject_selection == "Other (Type below)":
+                subject = st.text_input("Enter Subject Name", placeholder="e.g., Organic Chemistry")
+            else:
+                subject = subject_selection
+
+            # 3. Rest of the config
             num_questions = st.number_input("Number of Questions", min_value=1, max_value=50, value=10)
-            timer_minutes = st.number_input("Timer (Minutes)", min_value=1, max_value=180, value=1)
+            timer_minutes = st.number_input("Timer (Minutes)", min_value=1, max_value=180, value=10)
+            language = st.selectbox("Preferred Language", ["English", "Hindi", "Marathi", "Bengali", "Tamil", "Telugu", "Gujarati", "Kannada", "Malayalam", "Punjabi"])
             
             generate = st.form_submit_button("Generate Exam & Start")
             
@@ -81,9 +127,19 @@ def student_view():
                                 "subject": subject,
                                 "exam_name": exam_name,
                                 "num_questions": num_questions,
-                                "timer_minutes": timer_minutes
+                                "timer_minutes": timer_minutes,
+                                "original_language": language
                             }
-                            st.session_state.exam_questions = questions
+                            st.session_state.current_language = language
+                            st.session_state.original_questions = questions
+                            
+                            # Initial translation if not English
+                            if language != "English":
+                                with st.spinner(f"Translating questions to {language}..."):
+                                    st.session_state.exam_questions = generator.translate_questions(questions, language)
+                            else:
+                                st.session_state.exam_questions = questions
+
                             st.session_state.start_time = time.time()
                             st.rerun()
                         else:
@@ -98,61 +154,127 @@ def student_view():
 
     questions = st.session_state.exam_questions
     config = st.session_state.exam_config
-    st.sidebar.subheader("Proctoring Active")
-    st.sidebar.warning("Do NOT switch tabs. Any suspicious activity will be logged.")
+    if not st.session_state.get("exam_completed"):
+        if "copy_warnings" not in st.session_state:
+            st.session_state.copy_warnings = 0
 
-    # 4. Tab Switch Detection (JS Injection with Isolated Logging)
-    @st.fragment
-    def incident_logger():
-        # CSS to hide the hidden button
-        st.markdown("""
-            <style>
-            div[data-testid="stButton"] button[key="hidden_log_btn"] {
-                display: none;
-            }
-            </style>
-        """, unsafe_allow_html=True)
-        
-        if st.button("Log Incident", key="hidden_log_btn"):
-            log_proctoring_event({
-                "student_name": st.session_state.student_name,
-                "event_type": "tab_switch"
-            })
-            st.toast("Warning: Tab switch detected and logged!")
-
-    incident_logger()
-
-    st.components.v1.html("""
-        <script>
-        setTimeout(() => {
-            const getBtn = () => {
-                const buttons = window.parent.document.querySelectorAll('button');
-                return Array.from(buttons).find(b => b.innerText.includes("Log Incident"));
-            };
-
-            // Visibility Detection
-            window.parent.document.addEventListener('visibilitychange', function() {
-                if (window.parent.document.visibilityState === 'hidden') {
-                    const btn = getBtn();
-                    if (btn) btn.click();
-                    alert("SECURITY ALERT: Tab switch detected! This incident has been logged.");
+        # 4. Violation Logger (Isolated Fragment)
+        @st.fragment
+        def incident_logger():
+            # CSS to hide the hidden buttons
+            st.markdown("""
+                <style>
+                div[data-testid="stButton"] button[key^="hidden_"] {
+                    display: none;
                 }
-            });
+                </style>
+            """, unsafe_allow_html=True)
+            
+            # Button for Tab Switch (Immediate Submission)
+            if st.button("Log Tab Switch", key="hidden_tab_btn"):
+                log_proctoring_event({
+                    "student_name": st.session_state.username,
+                    "event_type": "tab_switch"
+                })
+                process_submission(violation="Tab switch detected")
 
-            // Focus Loss Detection
-            window.parent.onblur = function() {
-                const btn = getBtn();
-                if (btn) btn.click();
-            };
-        }, 1500);
-        </script>
-    """, height=0)
+            # Button for Copy Violation (3 Warning Limit)
+            if st.button("Log Copy Attempt", key="hidden_copy_btn"):
+                st.session_state.copy_warnings += 1
+                log_proctoring_event({
+                    "student_name": st.session_state.username,
+                    "event_type": "copy_attempt",
+                    "warning_number": st.session_state.copy_warnings
+                })
+                
+                if st.session_state.copy_warnings >= 3:
+                    process_submission(violation="Maximum copy violations reached (3/3)")
+                else:
+                    st.warning(f"⚠️ **WARNING: Copying is prohibited!** ({st.session_state.copy_warnings}/3 warnings)")
+                    st.toast(f"Security Alert: Copy attempt detected!")
+
+        incident_logger()
+
+        st.components.v1.html("""
+            <script>
+            (function() {
+                let copyBtn = null;
+                let tabBtn = null;
+
+                const showInstantWarning = (msg) => {
+                    const div = window.parent.document.createElement('div');
+                    div.style.position = 'fixed';
+                    div.style.top = '20px';
+                    div.style.left = '50%';
+                    div.style.transform = 'translateX(-50%)';
+                    div.style.backgroundColor = '#ff4b4b';
+                    div.style.color = 'white';
+                    div.style.padding = '12px 24px';
+                    div.style.borderRadius = '8px';
+                    div.style.zIndex = '999999';
+                    div.style.fontWeight = 'bold';
+                    div.style.boxShadow = '0 4px 12px rgba(0,0,0,0.3)';
+                    div.style.transition = 'opacity 0.5s';
+                    div.innerText = msg;
+                    window.parent.document.body.appendChild(div);
+                    setTimeout(() => {
+                        div.style.opacity = '0';
+                        setTimeout(() => div.remove(), 500);
+                    }, 3000);
+                };
+
+                const findButtons = () => {
+                    const buttons = Array.from(window.parent.document.querySelectorAll('button'));
+                    copyBtn = buttons.find(b => b.innerText.includes("Log Copy Attempt"));
+                    tabBtn = buttons.find(b => b.innerText.includes("Log Tab Switch"));
+                    return copyBtn && tabBtn;
+                };
+
+                // Fast polling for button discovery (max 5 seconds)
+                let attempts = 0;
+                const checkInterval = setInterval(() => {
+                    attempts++;
+                    if (findButtons() || attempts > 50) {
+                        clearInterval(checkInterval);
+                        if (copyBtn && tabBtn) {
+                            setupListeners();
+                        }
+                    }
+                }, 100);
+
+                function setupListeners() {
+                    // Visibility Detection (Tab Switch)
+                    window.parent.document.addEventListener('visibilitychange', function() {
+                        if (window.parent.document.visibilityState === 'hidden') {
+                            showInstantWarning("⚠️ Security Violation: Tab Switch Detected!");
+                            tabBtn.click();
+                        }
+                    });
+
+                    // Focus Loss Detection
+                    window.parent.onblur = function() {
+                        showInstantWarning("⚠️ Security Violation: Window Focus Lost!");
+                        tabBtn.click();
+                    };
+
+                    // Copy Detection
+                    window.parent.document.addEventListener('copy', (e) => {
+                        showInstantWarning("⚠️ WARNING: Copying text is strictly prohibited!");
+                        copyBtn.click();
+                    });
+
+                    // Prevent Right Click
+                    window.parent.document.addEventListener('contextmenu', event => event.preventDefault());
+                }
+            })();
+            </script>
+        """, height=0)
 
     # 5. Timer Logic (Using Sidebar Fragment to avoid fading/errors)
     if "start_time" not in st.session_state:
         st.session_state.start_time = time.time()
     
-    def process_submission():
+    def process_submission(violation=None):
         if st.session_state.get("exam_completed"):
             return
             
@@ -165,7 +287,7 @@ def student_view():
             if responses.get(q['id']) == q['correct_option']:
                 score += 1
         
-        submit_exam({
+        submission_data = {
             "student_name": st.session_state.username,
             "student_email": st.session_state.student_email,
             "exam_id": "ai_generated_" + config['exam_name'],
@@ -174,7 +296,13 @@ def student_view():
             "subject": config['subject'],
             "questions_data": questions,
             "user_responses": responses
-        })
+        }
+        
+        if violation:
+            submission_data["violation"] = violation
+            st.session_state.submission_reason = violation
+
+        submit_exam(submission_data)
         st.session_state.last_score = score
         st.session_state.exam_completed = True
         st.rerun()
@@ -192,6 +320,12 @@ def student_view():
             mins, secs = divmod(remaining, 60)
             st.metric("Time Remaining", f"{mins:02d}:{secs:02d}")
             
+            # Proctoring Status in Sidebar
+            st.divider()
+            st.write("🛡️ **Proctoring Status**")
+            st.info("Active: Browser Monitoring")
+            st.warning(f"Copy Warnings: {st.session_state.get('copy_warnings', 0)} / 3")
+            
             if remaining <= 0:
                 st.error("Time is up! Autosubmitting...")
                 time.sleep(1) # Give user a moment to see the message
@@ -201,7 +335,10 @@ def student_view():
 
 
     if st.session_state.get("exam_completed"):
-        st.success("🎉 Exam Submitted Successfully!")
+        if st.session_state.get("submission_reason"):
+            st.error(f"⚠️ **Auto-submitted due to violation: {st.session_state.submission_reason}**")
+        else:
+            st.success("🎉 Exam Submitted Successfully!")
         
         # --- Analytics Section ---
         score = st.session_state.get('last_score', 0)
@@ -212,13 +349,6 @@ def student_view():
         col1.metric("Final Score", f"{score} / {total}")
         col2.metric("Accuracy", f"{percentage:.1f}%")
         col3.metric("Status", "Pass" if percentage >= 40 else "Needs Improvement")
-        
-        # Simple Chart
-        df_chart = pd.DataFrame({
-            "Result": ["Correct", "Incorrect"],
-            "Count": [score, total - score]
-        })
-        st.bar_chart(df_chart.set_index("Result"))
         
         st.divider()
         st.subheader("📋 Detailed Performance Review")
@@ -232,6 +362,8 @@ def student_view():
             
             with st.container(border=True):
                 st.write(f"**Question {i+1}:** {q['question_text']}")
+                if q.get('appeared_in'):
+                    st.caption(f"Source: {q['appeared_in']}")
                 
                 # Show all options with highlights
                 options = {
@@ -275,9 +407,35 @@ def student_view():
 
     @st.fragment
     def exam_interface():
+        # --- Language Switcher ---
+        col1, col2 = st.columns([3, 1])
+        with col2:
+            current_lang = st.session_state.get("current_language", "English")
+            new_lang = st.selectbox(
+                "Change Language", 
+                ["English", "Hindi", "Marathi", "Bengali", "Tamil", "Telugu", "Gujarati", "Kannada", "Malayalam", "Punjabi"],
+                index=["English", "Hindi", "Marathi", "Bengali", "Tamil", "Telugu", "Gujarati", "Kannada", "Malayalam", "Punjabi"].index(current_lang),
+                key="lang_switcher"
+            )
+            
+            if new_lang != current_lang:
+                with st.spinner("Translating..."):
+                    generator = QuestionGenerator()
+                    if new_lang == "English":
+                        st.session_state.exam_questions = st.session_state.original_questions
+                    else:
+                        st.session_state.exam_questions = generator.translate_questions(st.session_state.original_questions, new_lang)
+                    st.session_state.current_language = new_lang
+                    st.rerun()
+
+        st.divider()
         responses = st.session_state.student_responses
         for i, q in enumerate(questions):
             st.write(f"**Q{i+1}: {q['question_text']}**")
+            # Display Question Source/Year
+            if q.get('appeared_in'):
+                st.caption(f"Source: {q['appeared_in']}")
+            
             # Update responses in session state directly
             choice = st.radio(
                 f"Select an option for Q{i+1}:",
@@ -316,7 +474,7 @@ def show_history():
         date = sub.get("submission_time")
         accuracy = (score/total)*100 if total > 0 else 0
         
-        with st.expander(f"Exam: {subject} | Accuracy: {accuracy:.1f}% | Date: {date.strftime('%Y-%m-%d %H:%M') if date else 'N/A'}"):
+        with st.expander(f"Exam: {subject} | Accuracy: {accuracy:.1f}% | Date: {date.strftime('%d %b %Y') if date else 'N/A'}"):
             st.write(f"**Exam Type:** {sub.get('exam_id', 'AI Generated')}")
             st.write(f"**Total Questions:** {total}")
             st.write(f"**Your Score:** {score}")
@@ -346,6 +504,9 @@ def show_history():
             correct = q['correct_option']
             with st.container(border=True):
                 st.write(f"**Question {i+1}:** {q['question_text']}")
+                if q.get('appeared_in'):
+                    st.caption(f"Source: {q['appeared_in']}")
+                
                 options = {"A": q['option_a'], "B": q['option_b'], "C": q['option_c'], "D": q['option_d']}
                 for key, val in options.items():
                     label = f"({key}) {val}"

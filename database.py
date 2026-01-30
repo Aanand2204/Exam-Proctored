@@ -29,7 +29,7 @@ def register_user(username, password, role="student"):
         "username": username,
         "password": hashed_password,
         "role": role,
-        "created_at": datetime.utcnow()
+        "created_at": datetime.now()
     })
     return True
 
@@ -43,7 +43,7 @@ def authenticate_user(username, password):
 def submit_exam(submission):
     db = get_db()
     if db is None: return
-    submission['submission_time'] = datetime.utcnow()
+    submission['submission_time'] = datetime.now()
     return db.student_submissions.insert_one(submission)
 
 def get_submissions(student_name=None):
@@ -60,5 +60,5 @@ def get_submissions(student_name=None):
 def log_proctoring_event(event):
     db = get_db()
     if db is None: return
-    event['timestamp'] = datetime.utcnow()
+    event['timestamp'] = datetime.now()
     return db.proctoring_logs.insert_one(event)

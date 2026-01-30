@@ -20,25 +20,43 @@ class QuestionGenerator:
         )
         self.parser = JsonOutputParser()
 
+    def _clean_latex(self, text):
+        """Standardizes LaTeX escaping and ensures it is wrapped in $ if not already."""
+        if not isinstance(text, str):
+            return text
+        
+        # Convert literal \\ to \ if it looks like LaTeX
+        # (LLMs often over-escape in JSON output)
+        cleaned = text.replace("\\\\", "\\")
+        
+        return cleaned
+
     def generate_questions(self, subject, exam_name, num_questions):
         prompt = ChatPromptTemplate.from_template(
             """You are an expert examiner for Indian competitive exams. 
             Generate {num_questions} multiple-choice questions (MCQs) strictly from Previous Year Questions (PYQs) of the {exam_name} exam for the subject {subject}.
             
-            IMPORTANT: Use LaTeX formatting for all mathematical expressions, equations, formulas, and symbols. Surround them with $ for inline or $$ for block display (e.g., $x^2 + y^2 = r^2$).
+            IMPORTANT: Use LaTeX formatting for ALL mathematical expressions, equations, formulas, and symbols. 
+            ALWAYS surround them with $ for inline (e.g., $x^2$) or $$ for block display.
             
-            CRITICAL: Ensure the output is a VALID JSON list. If you use backslashes for LaTeX (e.g., \frac), you MUST escape them as double backslashes (e.g., \\frac) in the JSON string.
-            
-            Note: Prefer decimal format for numerical values and percentages (e.g., 0.5 or 50% instead of 1/2) unless a fraction is specifically required by the question context.
+            CRITICAL: Ensure the output is a VALID JSON list. In the JSON string, backslashes MUST be escaped (e.g., "\\\\frac").
             
             Each question must have:
-            1. question_text: The actual question.
+            1. question_text: The actual question. (MUST be unique within this set, no repetitions)
             2. option_a: First option.
             3. option_b: Second option.
             4. option_c: Third option.
             5. option_d: Fourth option.
             6. correct_option: The letter (A, B, C, or D).
             7. explanation: A one-liner explanation of why the answer is correct.
+            8. appeared_in: A string stating when and where this question was asked (e.g., "CDS 2022" or "SSC CGL 2021 Tier I").
+
+            STRICT REQUIREMENTS:
+            - SUBJECT RELEVANCE: Every single question must be directly and strictly related to the subject: {subject}. Do not include questions from other subjects or topics.
+            - SOURCE ADHERENCE: You MUST ONLY generate questions that have actually appeared in previous years of the {exam_name} exam. Do not invent new questions.
+            - METADATA: Every question MUST specify exactly which year and paper it appeared in via the 'appeared_in' field.
+            - NO REPETITION: Every question in the list must be distinct.
+            - UNIQUE OPTIONS: All four options (A, B, C, D) for a given question MUST be different from each other.
 
             Format the output strictly as a JSON list of objects.
             Example:
@@ -50,7 +68,8 @@ class QuestionGenerator:
                     "option_c": "...",
                     "option_d": "...",
                     "correct_option": "A",
-                    "explanation": "..."
+                    "explanation": "...",
+                    "appeared_in": "CDS 2021"
                 }}
             ]
             
@@ -60,11 +79,14 @@ class QuestionGenerator:
 
         chain = prompt | self.llm | self.parser
         
-        questions = chain.invoke({
-            "subject": subject,
-            "exam_name": exam_name,
-            "num_questions": num_questions
-        })
+        try:
+            questions = chain.invoke({
+                "subject": subject,
+                "exam_name": exam_name,
+                "num_questions": num_questions
+            })
+        except Exception:
+            questions = []
         
         # Simple validation - sometimes invoke returns [] or empty
         if not questions:
@@ -75,18 +97,66 @@ class QuestionGenerator:
                 groq_api_key=os.getenv("GROQ_API_KEY")
             )
             chain = prompt | fallback_llm | self.parser
-            questions = chain.invoke({
-                "subject": subject,
-                "exam_name": exam_name,
-                "num_questions": num_questions
-            })
+            try:
+                questions = chain.invoke({
+                    "subject": subject,
+                    "exam_name": exam_name,
+                    "num_questions": num_questions
+                })
+            except Exception:
+                questions = []
 
         if isinstance(questions, list):
-            # Add unique IDs for Streamlit handling
+            # Clean and add unique IDs
             for i, q in enumerate(questions):
                 q['id'] = f"ai_q_{i}"
+                for key in ['question_text', 'option_a', 'option_b', 'option_c', 'option_d', 'explanation']:
+                    if key in q:
+                        q[key] = self._clean_latex(q[key])
             return questions
         return []
+
+    def translate_questions(self, questions, target_language):
+        """Translates a list of questions into the target language using LLM."""
+        if not target_language or target_language.lower() == "english":
+            return questions
+
+        prompt = ChatPromptTemplate.from_template(
+            """You are a professional translator specializing in academic and competitive exam content.
+            Translate the following list of multiple-choice questions into {target_language}.
+            
+            IMPORTANT: 
+            1. Translate everything EXCEPT LaTeX formulas/expressions (e.g., $E=mc^2$). Keep LaTeX EXACTLY as is, including tags like $ or $$.
+            2. Maintain the EXACT same JSON structure.
+            3. Ensure the 'correct_option' field remains (A, B, C, or D).
+            4. Translate 'question_text', 'option_a', 'option_b', 'option_c', 'option_d', 'explanation', and 'appeared_in'.
+            
+            Questions to translate:
+            {questions_json}
+            
+            Return ONLY the translated raw JSON.
+            """
+        )
+
+        chain = prompt | self.llm | self.parser
+        
+        try:
+            translated_questions = chain.invoke({
+                "target_language": target_language,
+                "questions_json": json.dumps(questions, ensure_ascii=False)
+            })
+            
+            if isinstance(translated_questions, list):
+                # Clean LaTeX in translated content
+                for q in translated_questions:
+                    for key in ['question_text', 'option_a', 'option_b', 'option_c', 'option_d', 'explanation']:
+                        if key in q:
+                            q[key] = self._clean_latex(q[key])
+                return translated_questions
+        except Exception as e:
+            print(f"Translation Error: {e}")
+            
+        return questions
 
 # Simple test block
 if __name__ == "__main__":
