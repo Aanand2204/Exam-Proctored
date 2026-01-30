@@ -152,6 +152,33 @@ def student_view():
     if "start_time" not in st.session_state:
         st.session_state.start_time = time.time()
     
+    def process_submission():
+        if st.session_state.get("exam_completed"):
+            return
+            
+        questions = st.session_state.exam_questions
+        responses = st.session_state.get("student_responses", {})
+        config = st.session_state.exam_config
+        
+        score = 0
+        for q in questions:
+            if responses.get(q['id']) == q['correct_option']:
+                score += 1
+        
+        submit_exam({
+            "student_name": st.session_state.username,
+            "student_email": st.session_state.student_email,
+            "exam_id": "ai_generated_" + config['exam_name'],
+            "score": score,
+            "total_questions": len(questions),
+            "subject": config['subject'],
+            "questions_data": questions,
+            "user_responses": responses
+        })
+        st.session_state.last_score = score
+        st.session_state.exam_completed = True
+        st.rerun()
+
     with st.sidebar:
         @st.fragment(run_every="1s")
         def show_timer():
@@ -166,7 +193,9 @@ def student_view():
             st.metric("Time Remaining", f"{mins:02d}:{secs:02d}")
             
             if remaining <= 0:
-                st.error("Time is up! Please submit your exam.")
+                st.error("Time is up! Autosubmitting...")
+                time.sleep(1) # Give user a moment to see the message
+                process_submission()
         
         show_timer()
 
@@ -240,47 +269,37 @@ def student_view():
 
     # 6. Exam Interface
     st.divider()
-    responses = {}
-    with st.form("exam_form"):
+    
+    if "student_responses" not in st.session_state:
+        st.session_state.student_responses = {}
+
+    @st.fragment
+    def exam_interface():
+        responses = st.session_state.student_responses
         for i, q in enumerate(questions):
             st.write(f"**Q{i+1}: {q['question_text']}**")
-            responses[q['id']] = st.radio(
+            # Update responses in session state directly
+            choice = st.radio(
                 f"Select an option for Q{i+1}:",
                 ["A", "B", "C", "D"],
                 key=f"q_{q['id']}",
-                index=None,
+                index=None if q['id'] not in responses else ["A", "B", "C", "D"].index(responses[q['id']]),
                 format_func=lambda x: f"{x}) {q[f'option_{x.lower()}']}"
             )
+            if choice:
+                responses[q['id']] = choice
             st.write("---")
         
         st.divider()
         st.write("### Ready to finish?")
         confirm = st.checkbox("I confirm that I have answered all questions and I am ready to submit.")
-        submit_clicked = st.form_submit_button("Submit Exam")
-        
-        if submit_clicked:
+        if st.button("Submit Exam", type="primary"):
             if not confirm:
                 st.error("Please check the confirmation box before submitting.")
             else:
-                score = 0
-                for q in questions:
-                    if responses.get(q['id']) == q['correct_option']:
-                        score += 1
-                
-                submit_exam({
-                    "student_name": st.session_state.username,
-                    "student_email": st.session_state.student_email,
-                    "exam_id": "ai_generated_" + config['exam_name'],
-                    "score": score,
-                    "total_questions": len(questions),
-                    "subject": config['subject'],
-                    "questions_data": questions,
-                    "user_responses": responses
-                })
-                st.session_state.last_score = score
-                st.session_state.student_responses = responses # Store responses for the review
-                st.session_state.exam_completed = True
-                st.rerun()
+                process_submission()
+    
+    exam_interface()
 
 def show_history():
     st.header("Your Exam History")
