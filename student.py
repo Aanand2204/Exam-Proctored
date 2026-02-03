@@ -78,7 +78,7 @@ def student_view():
             "MPSC (Rajyaseva)": ["History", "Geography", "Polity", "Economy", "General Science", "Environment", "CSAT"],
             "MPSC Combined": ["General Knowledge", "History", "Geography", "Economy", "Polity", "General Science", "Aptitude & Methods"],
             "Police Bharti": ["General Knowledge", "Mathematics", "Intelligence Test", "Marathi Language"],
-            "AFCAT": ["General Awareness", "Verbal Ability in English", "Numerical Ability", "Reasoning & Military Aptitude"],
+            "AFCAT": ["General Awareness", "Verbal Ability in English", "Numerical Ability", "Reasoning"],
             "CAT": ["Verbal Ability & Reading Comprehension", "Data Interpretation & Logical Reasoning", "Quantitative Ability"],
             "CLAT": ["English Language", "Current Affairs (including GK)", "Legal Reasoning", "Logical Reasoning", "Quantitative Techniques"],
             "CTET": ["Child Development & Pedagogy", "Language I", "Language II", "Mathematics", "Environmental Studies"],
@@ -112,6 +112,7 @@ def student_view():
             # 3. Rest of the config
             num_questions = st.number_input("Number of Questions", min_value=1, max_value=50, value=10)
             timer_minutes = st.number_input("Timer (Minutes)", min_value=1, max_value=180, value=10)
+            difficulty = st.selectbox("Difficulty Level", ["Easy", "Medium", "Hard"], index=1)
             language = st.selectbox("Preferred Language", ["English", "Hindi", "Marathi", "Bengali", "Tamil", "Telugu", "Gujarati", "Kannada", "Malayalam", "Punjabi"])
             
             generate = st.form_submit_button("Generate Exam & Start")
@@ -120,7 +121,17 @@ def student_view():
                 with st.spinner("Generating PYQs using AI... This may take a moment."):
                     try:
                         generator = QuestionGenerator()
-                        questions = generator.generate_questions(subject, exam_name, int(num_questions))
+                        
+                        # Fetch previous questions to avoid repetition
+                        from database import get_submissions
+                        previous_submissions = get_submissions(st.session_state.username)
+                        avoid_texts = []
+                        for sub in previous_submissions:
+                            if sub.get('subject') == subject:
+                                for q in sub.get('questions_data', []):
+                                    avoid_texts.append(q['question_text'])
+                        
+                        questions = generator.generate_questions(subject, exam_name, int(num_questions), difficulty=difficulty, avoid_questions=avoid_texts)
                         
                         if questions:
                             st.session_state.exam_config = {
@@ -128,6 +139,7 @@ def student_view():
                                 "exam_name": exam_name,
                                 "num_questions": num_questions,
                                 "timer_minutes": timer_minutes,
+                                "difficulty": difficulty,
                                 "original_language": language
                             }
                             st.session_state.current_language = language
@@ -158,126 +170,140 @@ def student_view():
         if "copy_warnings" not in st.session_state:
             st.session_state.copy_warnings = 0
 
-        # 4. Violation Logger (Isolated Fragment)
+        # 4. Invisible Proctoring Triggers
         @st.fragment
-        def incident_logger():
-            # CSS to hide the hidden buttons
-            st.markdown("""
-                <style>
-                div[data-testid="stButton"] button[key^="hidden_"] {
-                    display: none;
-                }
-                </style>
-            """, unsafe_allow_html=True)
-            
-            # Button for Tab Switch (Immediate Submission)
-            if st.button("Log Tab Switch", key="hidden_tab_btn"):
-                log_proctoring_event({
-                    "student_name": st.session_state.username,
-                    "event_type": "tab_switch"
-                })
+        def proctoring_triggers():
+            # These buttons are the only bridge between JS and Streamlit state
+            if st.button("Trigger Tab Switch", key="proc_tab"):
+                log_proctoring_event({"student_name": st.session_state.username, "event_type": "tab_switch"})
                 process_submission(violation="Tab switch detected")
 
-            # Button for Copy Violation (3 Warning Limit)
-            if st.button("Log Copy Attempt", key="hidden_copy_btn"):
+            if st.button("Trigger Copy Warning", key="proc_copy"):
                 st.session_state.copy_warnings += 1
                 log_proctoring_event({
                     "student_name": st.session_state.username,
                     "event_type": "copy_attempt",
                     "warning_number": st.session_state.copy_warnings
                 })
-                
                 if st.session_state.copy_warnings >= 3:
                     process_submission(violation="Maximum copy violations reached (3/3)")
                 else:
-                    st.warning(f"⚠️ **WARNING: Copying is prohibited!** ({st.session_state.copy_warnings}/3 warnings)")
-                    st.toast(f"Security Alert: Copy attempt detected!")
+                    st.warning(f"⚠️ **Security Alert: Copying is prohibited!** ({st.session_state.copy_warnings}/3)")
+                    st.toast("Copy attempt detected!")
 
-        incident_logger()
-
+        # 5. Global CSS & JavaScript Injection
+        # We use a single HTML component to handle both CSS injection and JS logic
         st.components.v1.html("""
             <script>
             (function() {
-                let copyBtn = null;
-                let tabBtn = null;
+                // 1. Inject Global CSS into Parent Head to Hide IU elements
+                let style = window.parent.document.getElementById('proctor-styles');
+                if (!style) {
+                    style = window.parent.document.createElement('style');
+                    style.id = 'proctor-styles';
+                    window.parent.document.head.appendChild(style);
+                }
+                style.innerHTML = `
+                    /* Hide Proctoring Buttons */
+                    div[id*="proctor-trigger-container"],
+                    button:has(div:contains("Trigger")),
+                    [data-testid="stBaseButton-secondary"]:has(span:contains("Trigger")),
+                    button[key="proc_tab"],
+                    button[key="proc_copy"] {
+                        display: none !important;
+                        visibility: hidden !important;
+                        height: 0 !important;
+                        width: 0 !important;
+                        position: absolute !important;
+                        opacity: 0 !important;
+                    }
+                    
+                    /* Hide Sidebar Navigation during test */
+                    [data-testid="stSidebarNav"],
+                    [data-testid="stSidebarNavItems"],
+                    .st-emotion-cache-1kyx97a {
+                        display: none !important;
+                    }
+                `;
 
                 const showInstantWarning = (msg) => {
                     const div = window.parent.document.createElement('div');
-                    div.style.position = 'fixed';
-                    div.style.top = '20px';
-                    div.style.left = '50%';
-                    div.style.transform = 'translateX(-50%)';
-                    div.style.backgroundColor = '#ff4b4b';
-                    div.style.color = 'white';
-                    div.style.padding = '12px 24px';
-                    div.style.borderRadius = '8px';
-                    div.style.zIndex = '999999';
-                    div.style.fontWeight = 'bold';
-                    div.style.boxShadow = '0 4px 12px rgba(0,0,0,0.3)';
-                    div.style.transition = 'opacity 0.5s';
+                    div.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#ff4b4b;color:white;padding:12px 24px;border-radius:8px;z-index:999999;font-weight:bold;box-shadow:0 4px 12px rgba(0,0,0,0.3);';
                     div.innerText = msg;
                     window.parent.document.body.appendChild(div);
-                    setTimeout(() => {
-                        div.style.opacity = '0';
-                        setTimeout(() => div.remove(), 500);
-                    }, 3000);
+                    setTimeout(() => div.remove(), 4000);
                 };
 
                 const findButtons = () => {
-                    const buttons = Array.from(window.parent.document.querySelectorAll('button'));
-                    copyBtn = buttons.find(b => b.innerText.includes("Log Copy Attempt"));
-                    tabBtn = buttons.find(b => b.innerText.includes("Log Tab Switch"));
-                    return copyBtn && tabBtn;
+                    const allButtons = Array.from(window.parent.document.querySelectorAll('button'));
+                    const tabBtn = allButtons.find(b => b.innerText.toLowerCase().includes("trigger tab switch") || b.textContent.toLowerCase().includes("trigger tab switch"));
+                    const copyBtn = allButtons.find(b => b.innerText.toLowerCase().includes("trigger copy warning") || b.textContent.toLowerCase().includes("trigger copy warning"));
+                    return { tabBtn, copyBtn };
                 };
 
-                // Fast polling for button discovery (max 5 seconds)
-                let attempts = 0;
-                const checkInterval = setInterval(() => {
-                    attempts++;
-                    if (findButtons() || attempts > 50) {
-                        clearInterval(checkInterval);
-                        if (copyBtn && tabBtn) {
-                            setupListeners();
-                        }
-                    }
-                }, 100);
+                const setupListeners = () => {
+                    if (window.parent.__proctoring_v3) return;
+                    window.parent.__proctoring_v3 = true;
 
-                function setupListeners() {
-                    // Visibility Detection (Tab Switch)
-                    window.parent.document.addEventListener('visibilitychange', function() {
-                        if (window.parent.document.visibilityState === 'hidden') {
-                            showInstantWarning("⚠️ Security Violation: Tab Switch Detected!");
+                    // Tab Switch / Focus Loss Logic
+                    const handleViolation = (type) => {
+                        const { tabBtn } = findButtons();
+                        if (tabBtn) {
+                            showInstantWarning(`⚠️ Security Violation: ${type} Detected!`);
                             tabBtn.click();
                         }
-                    });
-
-                    // Focus Loss Detection
-                    window.parent.onblur = function() {
-                        showInstantWarning("⚠️ Security Violation: Window Focus Lost!");
-                        tabBtn.click();
                     };
 
-                    // Copy Detection
-                    window.parent.document.addEventListener('copy', (e) => {
-                        showInstantWarning("⚠️ WARNING: Copying text is strictly prohibited!");
-                        copyBtn.click();
+                    window.parent.document.addEventListener('visibilitychange', () => {
+                        if (window.parent.document.visibilityState === 'hidden') handleViolation("Tab Switch");
                     });
 
-                    // Prevent Right Click
-                    window.parent.document.addEventListener('contextmenu', event => event.preventDefault());
-                }
+                    window.parent.addEventListener('blur', () => handleViolation("Focus Loss"));
+
+                    // Copy / Paste / Cut Logic
+                    const handleCopyAttempt = (type) => {
+                        const { copyBtn } = findButtons();
+                        if (copyBtn) {
+                            showInstantWarning(`⚠️ WARNING: ${type} is strictly prohibited!`);
+                            copyBtn.click();
+                        }
+                    };
+
+                    window.parent.document.addEventListener('copy', () => handleCopyAttempt("Copying"));
+                    window.parent.document.addEventListener('paste', () => handleCopyAttempt("Pasting"));
+                    window.parent.document.addEventListener('cut', () => handleCopyAttempt("Cutting"));
+
+                    // Right Click Logic
+                    window.parent.document.addEventListener('contextmenu', e => e.preventDefault());
+                };
+
+                // Rapid polling for buttons
+                let attempts = 0;
+                const interval = setInterval(() => {
+                    attempts++;
+                    const { tabBtn, copyBtn } = findButtons();
+                    if (tabBtn && copyBtn) {
+                        clearInterval(interval);
+                        setupListeners();
+                    } else if (attempts > 200) { // 10s timeout
+                        clearInterval(interval);
+                    }
+                }, 50);
             })();
             </script>
+            <div id="proctor-trigger-container" style="display:none"></div>
         """, height=0)
+
+        # Render the triggers (they will be hidden by the injected CSS)
+        with st.container():
+            proctoring_triggers()
 
     # 5. Timer Logic (Using Sidebar Fragment to avoid fading/errors)
     if "start_time" not in st.session_state:
         st.session_state.start_time = time.time()
     
+
     def process_submission(violation=None):
-        if st.session_state.get("exam_completed"):
-            return
-            
         questions = st.session_state.exam_questions
         responses = st.session_state.get("student_responses", {})
         config = st.session_state.exam_config
@@ -335,10 +361,20 @@ def student_view():
 
 
     if st.session_state.get("exam_completed"):
+        # Restore Sidebar Visibility when exam is done
+        st.components.v1.html("""
+            <script>
+            const style = window.parent.document.getElementById('proctor-styles');
+            if (style) style.innerHTML = ''; 
+            // Also reset initialization flags to allow future exams to re-bind
+            window.parent.__proctoring_v3 = false;
+            </script>
+        """, height=0)
+
         if st.session_state.get("submission_reason"):
             st.error(f"⚠️ **Auto-submitted due to violation: {st.session_state.submission_reason}**")
         else:
-            st.success("🎉 Exam Submitted Successfully!")
+            st.success(f"🎉 Exam Submitted Successfully! Score: {st.session_state.get('last_score', 0)} / {len(questions)}")
         
         # --- Analytics Section ---
         score = st.session_state.get('last_score', 0)
@@ -361,7 +397,7 @@ def student_view():
             is_correct = chosen == correct
             
             with st.container(border=True):
-                st.write(f"**Question {i+1}:** {q['question_text']}")
+                st.markdown(f"**Question {i+1}:**  \n{q['question_text']}")
                 if q.get('appeared_in'):
                     st.caption(f"Source: {q['appeared_in']}")
                 
@@ -382,8 +418,8 @@ def student_view():
                     else:
                         st.write(f"&nbsp;&nbsp;&nbsp;&nbsp;{label}")
                 
-                # One-liner explanation
-                st.info(f"**Explanation:** {q.get('explanation', 'No explanation available.')}")
+                # Step-wise explanation
+                st.info(f"**Step-by-step Explanation:**\n\n{q.get('explanation', 'No explanation available.')}")
         
         col1, col2 = st.columns(2)
         if col1.button("📑 Take New Test"):
@@ -441,7 +477,7 @@ def student_view():
     def exam_interface():
         responses = st.session_state.student_responses
         for i, q in enumerate(questions):
-            st.write(f"**Q{i+1}: {q['question_text']}**")
+            st.markdown(f"**Q{i+1}:**  \n{q['question_text']}")
             # Display Question Source/Year
             if q.get('appeared_in'):
                 st.caption(f"Source: {q['appeared_in']}")
@@ -513,7 +549,7 @@ def show_history():
             chosen = res.get(q['id'])
             correct = q['correct_option']
             with st.container(border=True):
-                st.write(f"**Question {i+1}:** {q['question_text']}")
+                st.markdown(f"**Question {i+1}:**  \n{q['question_text']}")
                 if q.get('appeared_in'):
                     st.caption(f"Source: {q['appeared_in']}")
                 

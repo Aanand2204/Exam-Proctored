@@ -12,3 +12,6 @@ exam/
 
 # Secrets
 .env
+
+#Logger
+exam_system_debug.log
