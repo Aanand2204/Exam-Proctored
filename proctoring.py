@@ -47,45 +47,55 @@ def inject_proctoring_assets():
 
             const findButtons = () => {
                 const allButtons = Array.from(window.parent.document.querySelectorAll('button'));
-                const tabBtn = allButtons.find(b => b.innerText.toLowerCase().includes("trigger tab switch"));
-                const copyBtn = allButtons.find(b => b.innerText.toLowerCase().includes("trigger copy warning"));
+                // Use textContent which works even if display:none
+                const tabBtn = allButtons.find(b => b.textContent.includes("Trigger Tab Switch"));
+                const copyBtn = allButtons.find(b => b.textContent.includes("Trigger Copy Warning"));
                 return { tabBtn, copyBtn };
             };
 
             const setupListeners = () => {
-                if (window.parent.__proctoring_v3) return;
-                window.parent.__proctoring_v3 = true;
+                try {
+                    if (window.parent.__proctoring_v3) return;
+                    window.parent.__proctoring_v3 = true;
 
-                window.parent.document.addEventListener('visibilitychange', () => {
-                    if (window.parent.document.visibilityState === 'hidden') {
+                    // Visibility listener (Tab Switching)
+                    window.parent.document.addEventListener('visibilitychange', () => {
+                        if (window.parent.document.visibilityState === 'hidden') {
+                            const { tabBtn } = findButtons();
+                            if (tabBtn) {
+                                showInstantWarning("⚠️ Security Violation: Tab Switch Detected!");
+                                tabBtn.click();
+                            }
+                        }
+                    });
+
+                    // Focus/Blur listener (Window focus)
+                    window.parent.addEventListener('blur', () => {
                         const { tabBtn } = findButtons();
                         if (tabBtn) {
-                            showInstantWarning("⚠️ Security Violation: Tab Switch Detected!");
+                            showInstantWarning("⚠️ Security Violation: Focus Loss Detected!");
                             tabBtn.click();
                         }
-                    }
-                });
+                    });
 
-                window.parent.addEventListener('blur', () => {
-                    const { tabBtn } = findButtons();
-                    if (tabBtn) {
-                        showInstantWarning("⚠️ Security Violation: Focus Loss Detected!");
-                        tabBtn.click();
-                    }
-                });
+                    // Copy/Paste/Cut listeners
+                    const handleViolation = (type) => {
+                        const { copyBtn } = findButtons();
+                        if (copyBtn) {
+                            showInstantWarning(`⚠️ WARNING: ${type} is strictly prohibited!`);
+                            copyBtn.click();
+                        }
+                    };
 
-                const handleCopyAttempt = (type) => {
-                    const { copyBtn } = findButtons();
-                    if (copyBtn) {
-                        showInstantWarning(`⚠️ WARNING: ${type} is strictly prohibited!`);
-                        copyBtn.click();
-                    }
-                };
-
-                window.parent.document.addEventListener('copy', () => handleCopyAttempt("Copying"));
-                window.parent.document.addEventListener('paste', () => handleCopyAttempt("Pasting"));
-                window.parent.document.addEventListener('cut', () => handleCopyAttempt("Cutting"));
-                window.parent.document.addEventListener('contextmenu', e => e.preventDefault());
+                    window.parent.document.addEventListener('copy', () => handleViolation("Copying"));
+                    window.parent.document.addEventListener('paste', () => handleViolation("Pasting"));
+                    window.parent.document.addEventListener('cut', () => handleViolation("Cutting"));
+                    window.parent.document.addEventListener('contextmenu', e => e.preventDefault());
+                    
+                    console.log("Proctoring listeners initialized successfully.");
+                } catch (e) {
+                    console.error("Proctoring initialization failed:", e);
+                }
             };
 
             let attempts = 0;
@@ -95,8 +105,11 @@ def inject_proctoring_assets():
                 if (tabBtn && copyBtn) {
                     clearInterval(interval);
                     setupListeners();
-                } else if (attempts > 200) { clearInterval(interval); }
-            }, 50);
+                } else if (attempts > 100) { 
+                    clearInterval(interval);
+                    console.warn("Proctoring: Trigger buttons not found after 100 attempts.");
+                }
+            }, 100);
         })();
         </script>
         <div id="proctor-trigger-container" style="display:none"></div>

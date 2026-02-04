@@ -132,11 +132,16 @@ class QuestionGenerator:
             avoid_list = "\n".join([f"- {q}" for q in avoid_questions[-50:]])
             avoid_context = f"\nCRITICAL: AVOID THESE RECENTLY GENERATED QUESTIONS (DO NOT REPEAT TOPIC OR TEXT):\n{avoid_list}\n"
 
-        prompt_template = """You are an expert examiner for Indian competitive exams (like UPSC, SSC, CDS, NDA, etc.). 
-            Today's Date: {current_date}
+        prompt_template = """You are an expert examiner for Indian competitive exams.
             
-            Generate {num_questions} multiple-choice questions (MCQs) for the {exam_name} exam for the subject {subject}.
-            DIFFICULTY LEVEL: {difficulty}
+            CRITICAL: GENERATE EXACTLY {num_questions} MCQs. 
+            STRICTLY NO PREAMBLE, NO "Here are your questions", NO CONVERSATIONAL TEXT. 
+            ONLY RETURN THE JSON LIST.
+            
+            Subject: {subject}
+            Exam: {exam_name}
+            Difficulty: {difficulty}
+            Target Count: {num_questions}
             
             STRICT ADHERENCE TO EXAM STANDARD:
             - You are a senior paper setter for the '{exam_name}' exam. Your reputation depends on the accuracy and difficulty of these questions.
@@ -181,7 +186,7 @@ class QuestionGenerator:
                - For 'Current Affairs', if it's a very recent event not yet in a specific exam paper, state "Latest Current Affairs (Month Year)".
 
             STRICT REQUIREMENTS:
-            - QUESTION COUNT: You MUST generate EXACTLY {num_questions} questions.
+            - QUESTION COUNT: You MUST generate EXACTLY {num_questions} questions. This is non-negotiable.
             - SUBJECT RELEVANCE: Every single question must be directly related to the subject: {subject}. 
               WARNING: If the subject is History, DO NOT ask math questions. If it is Current Affairs, DO NOT ask about historical events from years ago.
             - DIVERSITY: Every question must be distinct from the 'PREVIOUSLY GENERATED QUESTIONS' list provided above.
@@ -269,7 +274,7 @@ class QuestionGenerator:
                 temperature=0.2,
                 model_name=model_name,
                 groq_api_key=os.getenv("GROQ_API_KEY"),
-                max_tokens=4096 
+                max_tokens=8000 
             )
             current_chain = prompt | current_llm
             
