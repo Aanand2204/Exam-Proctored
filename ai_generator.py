@@ -147,19 +147,24 @@ class QuestionGenerator:
                 * Easy: Single-fact questions or direct 1-step logic.
                 * Medium: Requires linking 2 facts, eliminating 2 distractors, or 2-step logical deduction.
                 * Hard: MUST require complex analysis. For UPSC, this means identifying the correct combination of 3-4 statements. For AFCAT, this means complex spatial/verbal logic or tricky multi-step numeric reasoning (if subject is Numerical Ability).
+            
+            INTERNAL VERIFICATION (CHAIN OF THOUGHT):
+            - BEFORE writing the JSON for each question, you MUST mentally solve it yourself.
+            - Ensure the 'correct_option' you provide is logically bulletproof.
+            - If the subject is 'Logical Reasoning' or contains 'Intelligence'/'Aptitude':
+                * Check for "Syllogism" validity (All A are B, some B are C...).
+                * Verify "Blood Relation" trees manually.
+                * Ensure "Coding-Decoding" patterns are consistent across the entire question.
+                * Do NOT choose an option as correct if it is only "partially" true.
+            
+            STRICT REQUIREMENTS:
             - REPETITION IS STRICTLY FORBIDDEN: Do NOT generate questions similar to the 'AVOID' list. If you repeat a topic or text, the test is invalid.
             - STATEMENT-BASED QUESTIONS: If you generate a question with statements (1, 2, 3...), you MUST include the full text of those statements within 'question_text'. Use DOUBLE NEWLINES (\n\n) after the intro text and after EACH statement so they are printed line by line.
-                Example:
-                "Consider the following statements:
-                
-                1. [Statement 1]
-                
-                2. [Statement 2]
-                
-                Which of the above statements is/are correct?"
             - The questions MUST feel indistinguishable from an ACTUAL official question paper of {exam_name}.
             
-            CRITICAL: Ensure the output is a VALID JSON list. In the JSON string, backslashes MUST be escaped (e.g., "\\\\frac").
+            CRITICAL: 
+            - Ensure the output is a VALID JSON list. In the JSON string, backslashes MUST be escaped (e.g., "\\\\frac").
+            - The 'explanation' MUST justify WHY the correct option is right and WHY the others are wrong (concisely).
             
             Each question must have:
             1. question_text: The actual question. (STRICT: Do NOT include formulas, hints, or the method of solving in the question text. The student must use their own knowledge. Formulas belong ONLY in the explanation).
@@ -169,13 +174,9 @@ class QuestionGenerator:
             5. option_d: Fourth option. (STRICT: DO NOT include labels).
             6. correct_option: The letter (A, B, C, or D).
             7. explanation: Subject-specific format:
-               - For 'Mathematics', 'Physics', 'Chemistry': A clear, direct STEP-BY-STEP solution using numbered steps (1., 2., etc.). 
-                 CRITICAL: PROVIDE ONLY THE CALCULATION. NO "Thinking out loud", NO "However...", NO "On second thought...", NO "It seems...". JUST THE FACTS.
-               - For ALL OTHER subjects (History, Geography, Polity, Economics, Current Affairs): A single, concise ONE-LINE explanation.
-               CRITICAL: 
-               - NO HALLUCINATIONS: Do NOT include your own reasoning process or monologues.
-               - NO REPETITION: Each step or sentence must provide NEW facts.
-               - DIRECTNESS: Start immediately with the logic. No "The correct answer is A because...". Just the logic.
+                - For 'Mathematics', 'Physics', 'Chemistry': A clear, direct STEP-BY-STEP solution using numbered steps (1., 2., etc.). 
+                  CRITICAL: PROVIDE ONLY THE CALCULATION. NO "Thinking out loud". JUST THE FACTS.
+                - For ALL OTHER subjects (History, Geography, Reasoning, etc.): A single, concise ONE-LINE explanation that PROVES the correct answer.
             8. appeared_in: A string stating when and where this question was asked (e.g., "CDS 2022").
                - For 'Current Affairs', if it's a very recent event not yet in a specific exam paper, state "Latest Current Affairs (Month Year)".
 
@@ -205,8 +206,9 @@ class QuestionGenerator:
         # Use current supported high-availability models
         models = [
             "llama-3.3-70b-versatile",
-            "llama-3.1-70b-versatile",
-            "llama-3.1-8b-instant"
+            "llama-3.1-8b-instant",
+            "meta-llama/llama-4-maverick-17b-128e-instruct",
+            "meta-llama/llama-4-scout-17b-16e-instruct"
         ]
         
         def attempt_generation_with_retry(model_name, params, retries=1):
@@ -215,16 +217,22 @@ class QuestionGenerator:
             
             def _repair_json(bad_json_str):
                 """Attempts to fix common LLM JSON errors, including truncation and unclosed quotes."""
-                # 1. Surgical Backslash Protection
-                # AI often outputs \frac instead of \\frac. JSON loads \f as FormFeed.
-                # We need to double backslashes that look like LaTeX or aren't already escaped.
                 fixed = bad_json_str.strip()
-                # Protect existing escapes (\\)
-                fixed = fixed.replace("\\\\", "__DBL_BS__")
-                # Double any remaining single backslashes
-                fixed = fixed.replace("\\", "\\\\")
-                # Restore protected ones
-                fixed = fixed.replace("__DBL_BS__", "\\\\")
+                
+                # 1. Surgical Backslash Protection
+                # Only double backslashes that are NOT followed by characters that should be escaped in JSON (", \, /, b, f, n, r, t, u)
+                # This prevents breaking \" (escaped quote) while fixing \frac (missing backslash for JSON)
+                
+                def bslash_rep(m):
+                    bs = m.group(1)
+                    char = m.group(2)
+                    # If it's already a valid JSON escape sequence, leave it
+                    if char in '"\\/bfnrtu':
+                        return bs + char
+                    # Otherwise, it might be a LaTeX command like \frac -> needs to be \\frac for JSON
+                    return bs + bs + char
+
+                fixed = re.sub(r'(\\+)(.)', bslash_rep, fixed)
 
                 # 2. Handle unclosed quotes (aware of escaped quotes)
                 quote_count = len(re.findall(r'(?<!\\)"', fixed))
@@ -242,6 +250,21 @@ class QuestionGenerator:
                 
                 return fixed
 
+            def _extract_json(content):
+                """Extracts JSON block from response, handling markdown code blocks."""
+                # Try finding JSON in markdown blocks first
+                md_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', content)
+                if md_match:
+                    return md_match.group(1)
+                
+                # Fallback: Greedy from first [ to last ]
+                start = content.find('[')
+                end = content.rfind(']')
+                if start != -1 and end != -1:
+                    return content[start:end+1]
+                
+                return content
+
             current_llm = ChatGroq(
                 temperature=0.2,
                 model_name=model_name,
@@ -255,13 +278,7 @@ class QuestionGenerator:
                     response = current_chain.invoke(params)
                     content = response.content if hasattr(response, 'content') else str(response)
                     
-                    # Extraction logic: Greedy from first [ to last ]
-                    start = content.find('[')
-                    end = content.rfind(']')
-                    if start != -1 and end != -1:
-                        json_str = content[start:end+1]
-                    else:
-                        json_str = content
+                    json_str = _extract_json(content)
                     
                     try:
                         return json.loads(json_str)
@@ -313,7 +330,10 @@ class QuestionGenerator:
                         logger.info(f"Rate limit hit on {model_name}. Waiting {wait_time}s...")
                         time.sleep(wait_time)
                         continue
-                    logger.error(f"Generation on {model_name} failed: {e}")
+                    logger.error(f"Generation on {model_name} failed: {e}", exc_info=True)
+                    # If it's a critical error (like API key or quota) that isn't a 429, don't just 'break' quietly
+                    if any(x in error_msg for x in ["api_key", "quota", "invalid_request"]):
+                        raise e 
                     break
             return None
 

@@ -3,563 +3,280 @@ import time
 import pandas as pd
 from database import submit_exam, log_proctoring_event, register_user, authenticate_user, get_submissions
 from ai_generator import QuestionGenerator
+from constants import EXAM_SUBJECTS, SUPPORTED_LANGUAGES, DIFFICULTY_LEVELS
+from proctoring import inject_proctoring_assets, render_proctoring_triggers, reset_proctoring_ui
 
 def student_view():
     st.title("Student Portal - Online Exam")
 
-    # 1. Registration/Login
+    # 1. Auth Flow
     if "username" not in st.session_state:
-        tab1, tab2 = st.tabs(["Login", "Register"])
-        
-        with tab1:
-            with st.form("login_form"):
-                username = st.text_input("Username")
-                password = st.text_input("Password", type="password")
-                login_btn = st.form_submit_button("Login")
-                if login_btn:
-                    user = authenticate_user(username, password)
-                    if user:
-                        st.session_state.username = username
-                        st.session_state.student_name = username # Keep compatibility
-                        st.session_state.student_email = "" # Placeholder
-                        st.success(f"Logged in as {username}")
-                        st.rerun()
-                    else:
-                        st.error("Invalid username or password")
-        
-        with tab2:
-            with st.form("register_form"):
-                new_user = st.text_input("New Username")
-                new_pass = st.text_input("New Password", type="password")
-                confirm_pass = st.text_input("Confirm Password", type="password")
-                reg_btn = st.form_submit_button("Register")
-                if reg_btn:
-                    if not new_user or not new_pass:
-                        st.error("Please fill all fields")
-                    elif new_pass != confirm_pass:
-                        st.error("Passwords do not match")
-                    else:
-                        if register_user(new_user, new_pass):
-                            st.success("Registration successful! Please login.")
-                        else:
-                            st.error("Username already exists")
+        auth_view()
         return
 
+    # Sidebar Header (Always visible when logged in)
     st.sidebar.write(f"Logged in as: **{st.session_state.username}**")
-    if st.sidebar.button("Logout"):
+    
+    # 2. Navigation Control
+    menu = st.sidebar.radio("Navigation", ["Take New Exam", "Exam History"])
+    
+    if st.sidebar.button("Logout", key="main_logout"):
         st.session_state.clear()
         st.rerun()
 
-    # Sidebar Navigation
-    menu = st.sidebar.radio("Navigation", ["Take New Exam", "Exam History"])
-    
     if menu == "Exam History":
         show_history()
         return
 
-    st.write(f"Welcome back, **{st.session_state.username}**")
+    # 3. Exam State Flow
+    if st.session_state.get("exam_completed"):
+        results_view(st.session_state.exam_questions)
+    elif "exam_config" in st.session_state:
+        exam_session_view(st.session_state.exam_questions, st.session_state.exam_config)
+    else:
+        exam_config_view()
 
-    # 2. Exam Configuration
-    if "exam_config" not in st.session_state:
-        st.subheader("Configure Your Exam")
+def auth_view():
+    """Handles user login and registration."""
+    tab1, tab2 = st.tabs(["Login", "Register"])
+    
+    with tab1:
+        with st.form("login_form"):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            login_btn = st.form_submit_button("Login")
+            if login_btn:
+                user = authenticate_user(username, password)
+                if user:
+                    st.session_state.username = username
+                    st.session_state.student_name = username
+                    st.session_state.student_email = ""
+                    st.success(f"Logged in as {username}")
+                    st.rerun()
+                else:
+                    st.error("Invalid username or password")
+    
+    with tab2:
+        with st.form("register_form"):
+            new_user = st.text_input("New Username")
+            new_pass = st.text_input("New Password", type="password")
+            confirm_pass = st.text_input("Confirm Password", type="password")
+            reg_btn = st.form_submit_button("Register")
+            if reg_btn:
+                if not new_user or not new_pass:
+                    st.error("Please fill all fields")
+                elif new_pass != confirm_pass:
+                    st.error("Passwords do not match")
+                else:
+                    if register_user(new_user, new_pass):
+                        st.success("Registration successful! Please login.")
+                    else:
+                        st.error("Username already exists")
+
+def exam_config_view():
+    """Handles the exam setup and question generation."""
+    st.subheader("Configure Your Exam")
+    
+    all_exams = sorted(list(EXAM_SUBJECTS.keys())) + ["Other (Type below)"]
+    exam_name_selection = st.selectbox("1. Select Target Exam", all_exams, index=all_exams.index("UPSC CSE"))
+    
+    exam_name = st.text_input("Enter Exam Name", placeholder="e.g., KPSC, TNPSC") if exam_name_selection == "Other (Type below)" else exam_name_selection
+    subjects_list = ["Other (Type below)"] if exam_name_selection == "Other (Type below)" else EXAM_SUBJECTS.get(exam_name_selection, ["General Studies"]) + ["Other (Type below)"]
+    subject_selection = st.selectbox("2. Select Subject", subjects_list)
+    subject = st.text_input("Enter Subject Name", placeholder="e.g., Organic Chemistry") if subject_selection == "Other (Type below)" else subject_selection
+
+    with st.form("exam_config_form"):
+        num_questions = st.number_input("Number of Questions", min_value=1, max_value=50, value=10)
+        timer_minutes = st.number_input("Timer (Minutes)", min_value=1, max_value=180, value=10)
+        difficulty = st.selectbox("Difficulty Level", DIFFICULTY_LEVELS, index=1)
+        language = st.selectbox("Preferred Language", SUPPORTED_LANGUAGES)
         
-        # 1. Target Exam Selection (OUTSIDE form to trigger reruns)
-        EXAM_SUBJECTS = {
-            "UPSC CSE": ["Ancient History", "Medieval History", "Modern History", "Geography", "Polity", "Economy", "Science & Tech", "Environment", "CSAT", "International Relations", "Current Affairs"],
-            "CDS": ["Indian History", "Geography", "English", "Mathematics", "General Science", "Current Affairs", "Indian Polity"],
-            "NDA": ["Mathematics", "English", "Physics", "Chemistry", "General Science", "History & Freedom Movement", "Geography", "Current Events"],
-            "SSC CGL": ["Quantitative Aptitude", "General Intelligence & Reasoning", "English Comprehension", "General Awareness", "Statistics", "General Studies (Finance & Economics)"],
-            "SBI PO": ["Quantitative Aptitude", "Reasoning Ability", "English Language", "General/Economy/Banking Awareness", "Computer Aptitude"],
-            "IBPS PO": ["Quantitative Aptitude", "Reasoning Ability", "English Language", "General Awareness", "Computer Aptitude"],
-            "JEE Main": ["Physics", "Chemistry", "Mathematics"],
-            "JEE Advanced": ["Physics", "Chemistry", "Mathematics"],
-            "NEET UG": ["Physics", "Chemistry", "Botany", "Zoology"],
-            "GATE": ["Engineering Mathematics", "General Aptitude", "Subject Specific (Civil/Mech/CS/EE/etc.)"],
-            "MPSC (Rajyaseva)": ["History", "Geography", "Polity", "Economy", "General Science", "Environment", "CSAT"],
-            "MPSC Combined": ["General Knowledge", "History", "Geography", "Economy", "Polity", "General Science", "Aptitude & Methods"],
-            "Police Bharti": ["General Knowledge", "Mathematics", "Intelligence Test", "Marathi Language"],
-            "AFCAT": ["General Awareness", "Verbal Ability in English", "Numerical Ability", "Reasoning"],
-            "CAT": ["Verbal Ability & Reading Comprehension", "Data Interpretation & Logical Reasoning", "Quantitative Ability"],
-            "CLAT": ["English Language", "Current Affairs (including GK)", "Legal Reasoning", "Logical Reasoning", "Quantitative Techniques"],
-            "CTET": ["Child Development & Pedagogy", "Language I", "Language II", "Mathematics", "Environmental Studies"],
-            "UGC NET": ["Teaching Aptitude", "Research Aptitude", "Reading Comprehension", "Communication", "Mathematical Reasoning", "Logical Reasoning", "Data Interpretation", "ICT", "People & Environment", "Higher Education System"]
-        }
-
-        all_exams = sorted(list(EXAM_SUBJECTS.keys())) + ["Other (Type below)"]
-        exam_name_selection = st.selectbox("1. Select Target Exam", all_exams, index=all_exams.index("UPSC CSE"))
-        
-        # Calculate dynamic subjects list based on selection
-        if exam_name_selection == "Other (Type below)":
-            subjects_list = ["Other (Type below)"]
-        else:
-            subjects_list = EXAM_SUBJECTS.get(exam_name_selection, ["General Studies"]) + ["Other (Type below)"]
-
-        with st.form("exam_config_form"):
-            # Handle "Other" Exam Name Entry
-            if exam_name_selection == "Other (Type below)":
-                exam_name = st.text_input("Enter Exam Name", placeholder="e.g., KPSC, TNPSC")
+        if st.form_submit_button("Generate Exam & Start"):
+            if not subject or not exam_name:
+                st.error("Please fill all fields.")
             else:
-                exam_name = exam_name_selection
-
-            # 2. Subject Selection (Dynamic)
-            subject_selection = st.selectbox("2. Select Subject", subjects_list)
-            
-            if subject_selection == "Other (Type below)":
-                subject = st.text_input("Enter Subject Name", placeholder="e.g., Organic Chemistry")
-            else:
-                subject = subject_selection
-
-            # 3. Rest of the config
-            num_questions = st.number_input("Number of Questions", min_value=1, max_value=50, value=10)
-            timer_minutes = st.number_input("Timer (Minutes)", min_value=1, max_value=180, value=10)
-            difficulty = st.selectbox("Difficulty Level", ["Easy", "Medium", "Hard"], index=1)
-            language = st.selectbox("Preferred Language", ["English", "Hindi", "Marathi", "Bengali", "Tamil", "Telugu", "Gujarati", "Kannada", "Malayalam", "Punjabi"])
-            
-            generate = st.form_submit_button("Generate Exam & Start")
-            
-            if generate:
-                with st.spinner("Generating PYQs using AI... This may take a moment."):
+                with st.spinner("Generating PYQs using AI..."):
                     try:
                         generator = QuestionGenerator()
-                        
-                        # Fetch previous questions to avoid repetition
-                        from database import get_submissions
                         previous_submissions = get_submissions(st.session_state.username)
-                        avoid_texts = []
-                        for sub in previous_submissions:
-                            if sub.get('subject') == subject:
-                                for q in sub.get('questions_data', []):
-                                    avoid_texts.append(q['question_text'])
+                        avoid_texts = [q['question_text'] for sub in previous_submissions if sub.get('subject') == subject for q in sub.get('questions_data', [])]
                         
                         questions = generator.generate_questions(subject, exam_name, int(num_questions), difficulty=difficulty, avoid_questions=avoid_texts)
-                        
                         if questions:
-                            st.session_state.exam_config = {
-                                "subject": subject,
-                                "exam_name": exam_name,
-                                "num_questions": num_questions,
-                                "timer_minutes": timer_minutes,
-                                "difficulty": difficulty,
-                                "original_language": language
-                            }
+                            st.session_state.exam_config = {"subject": subject, "exam_name": exam_name, "num_questions": num_questions, "timer_minutes": timer_minutes, "difficulty": difficulty, "original_language": language}
                             st.session_state.current_language = language
                             st.session_state.original_questions = questions
+                            st.session_state.current_q_index = 0
                             
-                            # Initial translation if not English
                             if language != "English":
-                                with st.spinner(f"Translating questions to {language}..."):
-                                    st.session_state.exam_questions = generator.translate_questions(questions, language)
+                                st.session_state.exam_questions = generator.translate_questions(questions, language)
                             else:
                                 st.session_state.exam_questions = questions
 
                             st.session_state.start_time = time.time()
                             st.rerun()
                         else:
-                            st.error("AI generated empty output. Please try a different subject or fewer questions.")
+                            st.error("⚠️ AI returned no questions.")
                     except Exception as e:
-                        st.error(f"❌ AI Generation Error: {str(e)}")
-                        if "rate_limit" in str(e).lower():
-                            st.warning("You might be hitting Groq's rate limits. Please wait a minute and try again.")
-                        elif "api_key" in str(e).lower():
-                            st.warning("There seems to be an issue with your GROQ_API_KEY in the .env file.")
-        return
+                        st.error(f"❌ Error: {str(e)}")
 
-    questions = st.session_state.exam_questions
-    config = st.session_state.exam_config
-    if not st.session_state.get("exam_completed"):
-        if "copy_warnings" not in st.session_state:
-            st.session_state.copy_warnings = 0
-
-        # 4. Invisible Proctoring Triggers
-        @st.fragment
-        def proctoring_triggers():
-            # These buttons are the only bridge between JS and Streamlit state
-            if st.button("Trigger Tab Switch", key="proc_tab"):
-                log_proctoring_event({"student_name": st.session_state.username, "event_type": "tab_switch"})
-                process_submission(violation="Tab switch detected")
-
-            if st.button("Trigger Copy Warning", key="proc_copy"):
-                st.session_state.copy_warnings += 1
-                log_proctoring_event({
-                    "student_name": st.session_state.username,
-                    "event_type": "copy_attempt",
-                    "warning_number": st.session_state.copy_warnings
-                })
-                if st.session_state.copy_warnings >= 3:
-                    process_submission(violation="Maximum copy violations reached (3/3)")
-                else:
-                    st.warning(f"⚠️ **Security Alert: Copying is prohibited!** ({st.session_state.copy_warnings}/3)")
-                    st.toast("Copy attempt detected!")
-
-        # 5. Global CSS & JavaScript Injection
-        # We use a single HTML component to handle both CSS injection and JS logic
-        st.components.v1.html("""
-            <script>
-            (function() {
-                // 1. Inject Global CSS into Parent Head to Hide IU elements
-                let style = window.parent.document.getElementById('proctor-styles');
-                if (!style) {
-                    style = window.parent.document.createElement('style');
-                    style.id = 'proctor-styles';
-                    window.parent.document.head.appendChild(style);
-                }
-                style.innerHTML = `
-                    /* Hide Proctoring Buttons */
-                    div[id*="proctor-trigger-container"],
-                    button:has(div:contains("Trigger")),
-                    [data-testid="stBaseButton-secondary"]:has(span:contains("Trigger")),
-                    button[key="proc_tab"],
-                    button[key="proc_copy"] {
-                        display: none !important;
-                        visibility: hidden !important;
-                        height: 0 !important;
-                        width: 0 !important;
-                        position: absolute !important;
-                        opacity: 0 !important;
-                    }
-                    
-                    /* Hide Sidebar Navigation during test */
-                    [data-testid="stSidebarNav"],
-                    [data-testid="stSidebarNavItems"],
-                    .st-emotion-cache-1kyx97a {
-                        display: none !important;
-                    }
-                `;
-
-                const showInstantWarning = (msg) => {
-                    const div = window.parent.document.createElement('div');
-                    div.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#ff4b4b;color:white;padding:12px 24px;border-radius:8px;z-index:999999;font-weight:bold;box-shadow:0 4px 12px rgba(0,0,0,0.3);';
-                    div.innerText = msg;
-                    window.parent.document.body.appendChild(div);
-                    setTimeout(() => div.remove(), 4000);
-                };
-
-                const findButtons = () => {
-                    const allButtons = Array.from(window.parent.document.querySelectorAll('button'));
-                    const tabBtn = allButtons.find(b => b.innerText.toLowerCase().includes("trigger tab switch") || b.textContent.toLowerCase().includes("trigger tab switch"));
-                    const copyBtn = allButtons.find(b => b.innerText.toLowerCase().includes("trigger copy warning") || b.textContent.toLowerCase().includes("trigger copy warning"));
-                    return { tabBtn, copyBtn };
-                };
-
-                const setupListeners = () => {
-                    if (window.parent.__proctoring_v3) return;
-                    window.parent.__proctoring_v3 = true;
-
-                    // Tab Switch / Focus Loss Logic
-                    const handleViolation = (type) => {
-                        const { tabBtn } = findButtons();
-                        if (tabBtn) {
-                            showInstantWarning(`⚠️ Security Violation: ${type} Detected!`);
-                            tabBtn.click();
-                        }
-                    };
-
-                    window.parent.document.addEventListener('visibilitychange', () => {
-                        if (window.parent.document.visibilityState === 'hidden') handleViolation("Tab Switch");
-                    });
-
-                    window.parent.addEventListener('blur', () => handleViolation("Focus Loss"));
-
-                    // Copy / Paste / Cut Logic
-                    const handleCopyAttempt = (type) => {
-                        const { copyBtn } = findButtons();
-                        if (copyBtn) {
-                            showInstantWarning(`⚠️ WARNING: ${type} is strictly prohibited!`);
-                            copyBtn.click();
-                        }
-                    };
-
-                    window.parent.document.addEventListener('copy', () => handleCopyAttempt("Copying"));
-                    window.parent.document.addEventListener('paste', () => handleCopyAttempt("Pasting"));
-                    window.parent.document.addEventListener('cut', () => handleCopyAttempt("Cutting"));
-
-                    // Right Click Logic
-                    window.parent.document.addEventListener('contextmenu', e => e.preventDefault());
-                };
-
-                // Rapid polling for buttons
-                let attempts = 0;
-                const interval = setInterval(() => {
-                    attempts++;
-                    const { tabBtn, copyBtn } = findButtons();
-                    if (tabBtn && copyBtn) {
-                        clearInterval(interval);
-                        setupListeners();
-                    } else if (attempts > 200) { // 10s timeout
-                        clearInterval(interval);
-                    }
-                }, 50);
-            })();
-            </script>
-            <div id="proctor-trigger-container" style="display:none"></div>
-        """, height=0)
-
-        # Render the triggers (they will be hidden by the injected CSS)
-        with st.container():
-            proctoring_triggers()
-
-    # 5. Timer Logic (Using Sidebar Fragment to avoid fading/errors)
-    if "start_time" not in st.session_state:
-        st.session_state.start_time = time.time()
+def exam_session_view(questions, config):
+    """Handles the active exam session."""
+    inject_proctoring_assets()
     
-
     def process_submission(violation=None):
-        questions = st.session_state.exam_questions
         responses = st.session_state.get("student_responses", {})
-        config = st.session_state.exam_config
-        
-        score = 0
-        for q in questions:
-            if responses.get(q['id']) == q['correct_option']:
-                score += 1
-        
+        score = sum(1 for q in questions if responses.get(q['id']) == q['correct_option'])
         submission_data = {
             "student_name": st.session_state.username,
-            "student_email": st.session_state.student_email,
+            "student_email": st.session_state.get("student_email", ""),
             "exam_id": "ai_generated_" + config['exam_name'],
             "score": score,
             "total_questions": len(questions),
             "subject": config['subject'],
             "questions_data": questions,
-            "user_responses": responses
+            "user_responses": responses,
+            "violation": violation
         }
-        
-        if violation:
-            submission_data["violation"] = violation
-            st.session_state.submission_reason = violation
-
+        if violation: st.session_state.submission_reason = violation
         submit_exam(submission_data)
         st.session_state.last_score = score
         st.session_state.exam_completed = True
+        reset_proctoring_ui()
         st.rerun()
 
-    with st.sidebar:
-        @st.fragment(run_every="1s")
-        def show_timer():
-            if st.session_state.get("exam_completed"):
-                st.write("✅ **Exam Finished**")
-                return
+    render_proctoring_triggers(st.session_state.username, process_submission)
 
-            elapsed = time.time() - st.session_state.start_time
-            duration = config['timer_minutes'] * 60
-            remaining = max(0, int(duration - elapsed))
-            mins, secs = divmod(remaining, 60)
-            st.metric("Time Remaining", f"{mins:02d}:{secs:02d}")
-            
-            # Proctoring Status in Sidebar
-            st.divider()
-            st.write("🛡️ **Proctoring Status**")
-            st.info("Active: Browser Monitoring")
-            st.warning(f"Copy Warnings: {st.session_state.get('copy_warnings', 0)} / 3")
-            
-            if remaining <= 0:
-                st.error("Time is up! Autosubmitting...")
-                time.sleep(1) # Give user a moment to see the message
-                process_submission()
-        
-        show_timer()
-
-
-    if st.session_state.get("exam_completed"):
-        # Restore Sidebar Visibility when exam is done
-        st.components.v1.html("""
-            <script>
-            const style = window.parent.document.getElementById('proctor-styles');
-            if (style) style.innerHTML = ''; 
-            // Also reset initialization flags to allow future exams to re-bind
-            window.parent.__proctoring_v3 = false;
-            </script>
-        """, height=0)
-
-        if st.session_state.get("submission_reason"):
-            st.error(f"⚠️ **Auto-submitted due to violation: {st.session_state.submission_reason}**")
-        else:
-            st.success(f"🎉 Exam Submitted Successfully! Score: {st.session_state.get('last_score', 0)} / {len(questions)}")
-        
-        # --- Analytics Section ---
-        score = st.session_state.get('last_score', 0)
-        total = len(questions)
-        percentage = (score / total) * 100
-        
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Final Score", f"{score} / {total}")
-        col2.metric("Accuracy", f"{percentage:.1f}%")
-        col3.metric("Status", "Pass" if percentage >= 40 else "Needs Improvement")
-        
-        st.divider()
-        st.subheader("📋 Detailed Performance Review")
-        
-        user_responses = st.session_state.get("student_responses", {})
-        
-        for i, q in enumerate(questions):
-            chosen = user_responses.get(q['id'])
-            correct = q['correct_option']
-            is_correct = chosen == correct
-            
-            with st.container(border=True):
-                st.markdown(f"**Question {i+1}:**  \n{q['question_text']}")
-                if q.get('appeared_in'):
-                    st.caption(f"Source: {q['appeared_in']}")
-                
-                # Show all options with highlights
-                options = {
-                    "A": q['option_a'],
-                    "B": q['option_b'],
-                    "C": q['option_c'],
-                    "D": q['option_d']
-                }
-                
-                for key, val in options.items():
-                    label = f"({key}) {val}"
-                    if key == correct:
-                        st.write(f"✅ **{label} (Correct Answer)**")
-                    elif key == chosen:
-                        st.write(f"❌ ~~{label} (Your Choice)~~")
-                    else:
-                        st.write(f"&nbsp;&nbsp;&nbsp;&nbsp;{label}")
-                
-                # Step-wise explanation
-                st.info(f"**Step-by-step Explanation:**\n\n{q.get('explanation', 'No explanation available.')}")
-        
-        col1, col2 = st.columns(2)
-        if col1.button("📑 Take New Test"):
-            # Clear only exam-related state
-            keys_to_keep = ["username", "student_name", "student_email"]
-            for key in list(st.session_state.keys()):
-                if key not in keys_to_keep:
-                    del st.session_state[key]
-            st.rerun()
-            
-        if col2.button("🚪 Logout"):
-            st.session_state.clear()
-            st.rerun()
-        return
-
-    # 6. Exam Interface
-    st.divider()
-    
-    if "student_responses" not in st.session_state:
-        st.session_state.student_responses = {}
-
-    # --- Language Switcher (Enhanced for Deployment Stability) ---
-    if "current_language" not in st.session_state:
-        st.session_state.current_language = st.session_state.exam_config.get("original_language", "English")
-
+    # UI Components
     col1, col2 = st.columns([3, 1])
     with col2:
-        langs = ["English", "Hindi", "Marathi", "Bengali", "Tamil", "Telugu", "Gujarati", "Kannada", "Malayalam", "Punjabi"]
-        # Use selection as the source of truth
-        selected_lang = st.selectbox(
-            "Change Language", 
-            langs,
-            index=langs.index(st.session_state.current_language) if st.session_state.current_language in langs else 0,
-            key="lang_selector_widget"
-        )
-        
-        # Only trigger translation if the selection differs from what's currently active in the UI
+        selected_lang = st.selectbox("Language", SUPPORTED_LANGUAGES, index=SUPPORTED_LANGUAGES.index(st.session_state.current_language))
         if selected_lang != st.session_state.current_language:
-            placeholder = st.empty()
-            with placeholder.container():
-                st.info(f"🔄 Switching to {selected_lang}...")
-                generator = QuestionGenerator()
-                if selected_lang == "English":
-                    st.session_state.exam_questions = st.session_state.original_questions
-                else:
-                    st.session_state.exam_questions = generator.translate_questions(st.session_state.original_questions, selected_lang)
-                st.session_state.current_language = selected_lang
-                st.success("✅ Translated!")
-                time.sleep(0.5) 
+            st.session_state.exam_questions = QuestionGenerator().translate_questions(st.session_state.original_questions, selected_lang) if selected_lang != "English" else st.session_state.original_questions
+            st.session_state.current_language = selected_lang
+            st.rerun()
+
+    @st.fragment(run_every="1s")
+    def main_timer():
+        elapsed = time.time() - st.session_state.start_time
+        remaining = max(0, int(config['timer_minutes'] * 60 - elapsed))
+        mins, secs = divmod(remaining, 60)
+        st.metric("⏳ Time Left", f"{mins:02d}:{secs:02d}")
+        if remaining <= 0: process_submission(violation="Time Explored")
+
+    main_timer()
+
+    @st.fragment
+    def question_palette():
+        responses = st.session_state.get("student_responses", {})
+        total = len(questions)
+        curr = st.session_state.get("current_q_index", 0)
+        
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Total", total)
+        m2.metric("Attempted", len(responses))
+        m3.metric("Remaining", total - len(responses))
+
+        cols = st.columns(10)
+        for i in range(total):
+            label = f"{i+1}"
+            if i == curr: label = f"📍 {label}"
+            elif questions[i]['id'] in responses: label = f"✅ {label}"
+            
+            if cols[i % 10].button(label, key=f"pal_{i}", use_container_width=True, type="primary" if i == curr else "secondary"):
+                st.session_state.current_q_index = i
                 st.rerun()
 
+    question_palette()
     st.divider()
 
     @st.fragment
     def exam_interface():
-        responses = st.session_state.student_responses
-        for i, q in enumerate(questions):
-            st.markdown(f"**Q{i+1}:**  \n{q['question_text']}")
-            # Display Question Source/Year
+        idx = st.session_state.get("current_q_index", 0)
+        q = questions[idx]
+        responses = st.session_state.get("student_responses", {})
+        
+        st.write(f"**Question {idx + 1} of {len(questions)}**")
+        st.progress((idx + 1) / len(questions))
+        
+        with st.container(border=True):
+            st.markdown(f"**Q{idx+1}:**  \n{q['question_text']}")
+            choice = st.radio("Options", ["A", "B", "C", "D"], key=f"q_{q['id']}", index=None if q['id'] not in responses else ["A", "B", "C", "D"].index(responses[q['id']]), format_func=lambda x: f"{x}) {q[f'option_{x.lower()}']}")
+            if choice: responses[q['id']] = choice
+            st.session_state.student_responses = responses
+
+        c1, c2, c3 = st.columns(3)
+        if c1.button("⬅️ Previous", disabled=(idx == 0)):
+            st.session_state.current_q_index -= 1
+            st.rerun()
+        if c2.button("Next ➡️") if idx < len(questions) - 1 else False:
+            st.session_state.current_q_index += 1
+            st.rerun()
+        if c3.button("🚀 Submit", type="primary") if idx == len(questions) - 1 else False:
+            st.session_state.show_submit_confirm = True
+
+        if st.session_state.get("show_submit_confirm"):
+            st.warning("Confirm Submission?")
+            if st.checkbox("I am ready"):
+                if st.button("Confirm"): process_submission()
+            if st.button("Cancel"): del st.session_state.show_submit_confirm; st.rerun()
+
+def results_view(questions):
+    """Displays exam results with detailed question review."""
+    st.header("Exam Results")
+    if st.session_state.get("submission_reason"):
+        st.error(f"⚠️ **Auto-submitted due to violation: {st.session_state.submission_reason}**")
+    else:
+        st.success(f"🎉 Exam Submitted Successfully! Score: {st.session_state.get('last_score', 0)} / {len(questions)}")
+    
+    score = st.session_state.get('last_score', 0)
+    total = len(questions)
+    percentage = (score / total) * 100
+    
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Final Score", f"{score} / {total}")
+    col2.metric("Accuracy", f"{percentage:.1f}%")
+    col3.metric("Status", "Pass" if percentage >= 40 else "Needs Improvement")
+    
+    st.divider()
+    st.subheader("📋 Detailed Performance Review")
+    
+    res = st.session_state.get("student_responses", {})
+    for i, q in enumerate(questions):
+        chosen = res.get(q['id'])
+        correct = q['correct_option']
+        
+        with st.container(border=True):
+            st.markdown(f"**Question {i+1}:**  \n{q['question_text']}")
             if q.get('appeared_in'):
                 st.caption(f"Source: {q['appeared_in']}")
             
-            # Update responses in session state directly
-            choice = st.radio(
-                f"Select an option for Q{i+1}:",
-                ["A", "B", "C", "D"],
-                key=f"q_{q['id']}",
-                index=None if q['id'] not in responses else ["A", "B", "C", "D"].index(responses[q['id']]),
-                format_func=lambda x: f"{x}) {q[f'option_{x.lower()}']}"
-            )
-            if choice:
-                responses[q['id']] = choice
-            st.write("---")
-        
-        st.divider()
-        st.write("### Ready to finish?")
-        confirm = st.checkbox("I confirm that I have answered all questions and I am ready to submit.")
-        if st.button("Submit Exam", type="primary"):
-            if not confirm:
-                st.error("Please check the confirmation box before submitting.")
-            else:
-                process_submission()
+            options = {"A": q['option_a'], "B": q['option_b'], "C": q['option_c'], "D": q['option_d']}
+            for key, val in options.items():
+                label = f"({key}) {val}"
+                if key == correct:
+                    st.write(f"✅ **{label} (Correct Answer)**")
+                elif key == chosen:
+                    st.write(f"❌ ~~{label} (Your Choice)~~")
+                else:
+                    st.write(f"&nbsp;&nbsp;&nbsp;&nbsp;{label}")
+            
+            st.info(f"**Explanation:**\n\n{q.get('explanation', 'No explanation available.')}")
     
-    exam_interface()
+    col1, col2 = st.columns(2)
+    if col1.button("📑 Take New Test", key="new_test_btn"):
+        keys_to_keep = ["username", "student_name", "student_email"]
+        for key in list(st.session_state.keys()):
+            if key not in keys_to_keep:
+                del st.session_state[key]
+        st.rerun()
+        
+    if col2.button("🚪 Logout", key="logout_btn_res"):
+        st.session_state.clear()
+        st.rerun()
 
 def show_history():
-    st.header("Your Exam History")
-    submissions = get_submissions(st.session_state.username)
-    
-    if not submissions:
-        st.info("You haven't taken any exams yet.")
-        return
-    
-    for sub in submissions:
-        subject = sub.get("subject", "N/A")
-        total = sub.get("total_questions", 0)
-        score = sub.get("score", 0)
-        date = sub.get("submission_time")
-        accuracy = (score/total)*100 if total > 0 else 0
-        
-        with st.expander(f"Exam: {subject} | Accuracy: {accuracy:.1f}% | Date: {date.strftime('%d %b %Y') if date else 'N/A'}"):
-            st.write(f"**Exam Type:** {sub.get('exam_id', 'AI Generated')}")
-            st.write(f"**Total Questions:** {total}")
-            st.write(f"**Your Score:** {score}")
-            st.write(f"**Accuracy:** {(score/total)*100:.1f}%" if total > 0 else "N/A")
-            
-            if "questions_data" in sub and "user_responses" in sub:
-                if st.button("View Detailed Result", key=f"view_{sub['id']}"):
-                    st.session_state.selected_exam_history = sub
-                    st.rerun()
-            else:
-                st.warning("Detailed question data is not available for this older record.")
-            st.write("---")
-
-    if st.session_state.get("selected_exam_history"):
-        sub = st.session_state.selected_exam_history
-        st.divider()
-        st.subheader(f"Detailed Review: {sub.get('subject')}")
-        if st.button("Close Detailed Review"):
-            del st.session_state.selected_exam_history
-            st.rerun()
-
-        qs = sub['questions_data']
-        res = sub['user_responses']
-        
-        for i, q in enumerate(qs):
-            chosen = res.get(q['id'])
-            correct = q['correct_option']
-            with st.container(border=True):
-                st.markdown(f"**Question {i+1}:**  \n{q['question_text']}")
-                if q.get('appeared_in'):
-                    st.caption(f"Source: {q['appeared_in']}")
-                
-                options = {"A": q['option_a'], "B": q['option_b'], "C": q['option_c'], "D": q['option_d']}
-                for key, val in options.items():
-                    label = f"({key}) {val}"
-                    if key == correct:
-                        st.write(f"✅ **{label} (Correct Answer)**")
-                    elif key == chosen:
-                        st.write(f"❌ ~~{label} (Your Choice)~~")
-                    else:
-                        st.write(f"&nbsp;&nbsp;&nbsp;&nbsp;{label}")
-                st.info(f"**Explanation:** {q.get('explanation', 'N/A')}")
+    st.header("History")
+    for sub in get_submissions(st.session_state.username):
+        with st.expander(f"{sub.get('subject')} - {sub.get('score')}/{sub.get('total_questions')}"):
+            st.write(f"Date: {sub.get('submission_time')}")
