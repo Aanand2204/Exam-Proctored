@@ -86,10 +86,10 @@ def exam_config_view():
     subject = st.text_input("Enter Subject Name", placeholder="e.g., Organic Chemistry") if subject_selection == "Other (Type below)" else subject_selection
 
     with st.form("exam_config_form"):
-        num_questions = st.number_input("Number of Questions", min_value=1, max_value=50, value=10)
-        timer_minutes = st.number_input("Timer (Minutes)", min_value=1, max_value=180, value=10)
-        difficulty = st.selectbox("Difficulty Level", DIFFICULTY_LEVELS, index=1)
-        language = st.selectbox("Preferred Language", SUPPORTED_LANGUAGES)
+        num_questions = st.number_input("Number of Questions", min_value=1, max_value=50, value=10, key="cfg_num_qs")
+        timer_minutes = st.number_input("Timer (Minutes)", min_value=1, max_value=180, value=10, key="cfg_timer")
+        difficulty = st.selectbox("Difficulty Level", DIFFICULTY_LEVELS, index=1, key="cfg_diff")
+        language = st.selectbox("Preferred Language", SUPPORTED_LANGUAGES, key="cfg_lang")
         
         if st.form_submit_button("Generate Exam & Start"):
             if not subject or not exam_name:
@@ -220,6 +220,8 @@ def exam_session_view(questions, config):
             if st.checkbox("I am ready"):
                 if st.button("Confirm"): process_submission()
             if st.button("Cancel"): del st.session_state.show_submit_confirm; st.rerun()
+
+    exam_interface()
 
 def results_view(questions):
     """Displays exam results with detailed question review."""
