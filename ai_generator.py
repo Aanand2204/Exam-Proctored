@@ -87,38 +87,83 @@ class QuestionGenerator:
         text = re.sub(r'^[1-4][\.\)]\s*', '', text)
         return text.strip()
 
-    def _clean_explanation(self, text):
-        """Detects and removes repetitive loops/stuttering in AI explanations."""
+    def _strip_conversational_filler(self, text):
+        """Removes meta-commentary while preserving analytical context."""
         if not isinstance(text, str):
             return text
+            
+        # 1. Remove obvious conversational preamble only if it precedes purely meta-talk
+        filler_patterns = [
+            r"^(Here is|This question|The solution|Explanation):\s*",
+            r"^(Note|Tip|Hint):\s*.*$",
+            r"^Step-by-step:\s*",
+            r"^\(.*?\) " 
+        ]
         
-        lines = [line.strip() for line in text.split('\n') if line.strip()]
+        cleaned = text
+        for pattern in filler_patterns:
+            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE | re.MULTILINE)
+            
+        # Instead of stripping "Based on...", we'll let the prompt guide the AI 
+        # to produce crisp steps, as regex is too blunt for semantic filtering.
+            
+        lines = cleaned.split('\n')
+        final_lines = []
+        for line in lines:
+            line = line.strip()
+            if not line: continue
+            if "matches option" in line.lower() and line != lines[-1]:
+                continue
+            final_lines.append(line)
+            
+        return '\n'.join(final_lines)
+
+    def _clean_explanation(self, text):
+        """Detects and removes repetitive loops/stuttering and strips conversational filler."""
+        if not text:
+            return ""
+            
+        # Handle cases where LLM returns a list instead of a string
+        if isinstance(text, list):
+            text = "\n".join([str(t) for t in text])
+            
+        if not isinstance(text, str):
+            text = str(text)
+        
+        # 1. Normalize formatting: Ensure numbered steps are on new lines if they are glued together
+        # e.g., "1. First step. 2. Second step." -> "1. First step.\n2. Second step."
+        text = re.sub(r'(?<=\.)\s+(\d+[\.\)])\s+', r'\n\1 ', text)
+        
+        # 2. Ban speculative trailing content (heuristic)
+        text = re.sub(r'(Assuming|Perhaps|Maybe|Likely|It might be|Another pattern).*$', '', text, flags=re.IGNORECASE | re.MULTILINE)
+
+        # Strip conversational filler first
+        cleaned_text = self._strip_conversational_filler(text)
+        
+        lines = [line.strip() for line in cleaned_text.split('\n') if line.strip()]
         unique_lines = []
         seen_content = set()
         
         for line in lines:
-            # Strip the step number (e.g., "1. ") for comparison
-            content = re.sub(r'^\d+[\.\)]\s*', '', line).strip()
-            # If we see identical content twice or if it's too short to be unique, skip sequential duplicates
-            if content in seen_content:
+            # Strip formatting for comparison to detect loops
+            content = re.sub(r'^\d+[\.\)]\s*', '', line).strip().lower()
+            if content in seen_content or len(content) < 3:
                 continue
             
+            # Additional constraint: No paragraphs. If a line is too long, truncate it
+            if len(line.split()) > 60: 
+                line = ' '.join(line.split()[:60]) + "..."
+                
             unique_lines.append(line)
             seen_content.add(content)
             
-            # Hard cap at 15 steps to prevent infinite hallucinations
-            if len(unique_lines) >= 15:
-                unique_lines.append("... (Step-wise solution continues)")
+            if len(unique_lines) >= 10: # Cap at 10 steps for crispness
                 break
                 
-        # Re-number the steps if we cleaned them
         final_lines = []
         for i, line in enumerate(unique_lines):
             content = re.sub(r'^\d+[\.\)]\s*', '', line).strip()
-            if content == "... (Step-wise solution continues)":
-                final_lines.append(content)
-            else:
-                final_lines.append(f"{i+1}. {content}")
+            final_lines.append(f"{i+1}. {content}")
                 
         return '\n'.join(final_lines)
 
@@ -128,83 +173,58 @@ class QuestionGenerator:
         
         avoid_context = ""
         if avoid_questions:
-            # Avoid the 50 most recent questions to prevent repetitive patterns
-            avoid_list = "\n".join([f"- {q}" for q in avoid_questions[-50:]])
-            avoid_context = f"\nCRITICAL: AVOID THESE RECENTLY GENERATED QUESTIONS (DO NOT REPEAT TOPIC OR TEXT):\n{avoid_list}\n"
+            # Compress avoid list to just unique prefixes to save prompt space
+            avoid_list = "\n".join([f"- {q[:60]}..." for q in set(avoid_questions[-100:])])
+            avoid_context = f"\nCRITICAL: AVOID THESE RECENT TOPICS (TEXT PREFIXES):\n{avoid_list}\n"
 
-        prompt_template = """You are an expert examiner for Indian competitive exams.
+        prompt_template = """You are a senior paper setter for the '{exam_name}' exam. 
             
             CRITICAL: GENERATE EXACTLY {num_questions} MCQs. 
-            STRICTLY NO PREAMBLE, NO "Here are your questions", NO CONVERSATIONAL TEXT. 
-            ONLY RETURN THE JSON LIST.
+            ONLY RETURN THE JSON LIST. No preamble.
             
             Subject: {subject}
-            Exam: {exam_name}
             Difficulty: {difficulty}
             Target Count: {num_questions}
             
-            STRICT ADHERENCE TO EXAM STANDARD:
-            - You are a senior paper setter for the '{exam_name}' exam. Your reputation depends on the accuracy and difficulty of these questions.
-            - {exam_name} LEVEL TARGET:
-                * UPSC CSE: Graduate/Post-graduate level analytical depth. MUST use multi-statement questions (Statement 1, Statement 2, etc.) for at least 50% of the set. Focus on complex inter-disciplinary links.
-                * AFCAT/SSC/CDS: Under-graduate level concepts. Focus on logical precision, speed-based tricks, and conceptual "traps" in wording.
-            - DIFFICULTY DEFINITION:
-                * Easy: Single-fact questions or direct 1-step logic.
-                * Medium: Requires linking 2 facts, eliminating 2 distractors, or 2-step logical deduction.
-                * Hard: MUST require complex analysis. For UPSC, this means identifying the correct combination of 3-4 statements. For AFCAT, this means complex spatial/verbal logic or tricky multi-step numeric reasoning (if subject is Numerical Ability).
+            DIFFICULTY BENCHMARKS (STRICT ADHERENCE):
+            * EASY (Avoid these if difficulty is 'Hard'):
+                - Single-step logic (e.g., "Find 10% of 500").
+                - Direct lookup (e.g., "Who founded the Maurya Empire?").
+                - Simple mapping (e.g., "L=12, find O").
+            * HARD (Mandatory if difficulty is 'Hard'):
+                - Multi-step logic (At least 3-4 steps).
+                - Inter-disciplinary (e.g., "Link a 19th-century economic policy to a specific modern law").
+                - Complexity (e.g., "Math: Compound interest vs Simple interest with partial withdrawals").
+                - Reasoning: Complex blood relations with 4 generations and indirect titles.
             
-            INTERNAL VERIFICATION (CHAIN OF THOUGHT):
-            - BEFORE writing the JSON for each question, you MUST mentally solve it yourself.
-            - Ensure the 'correct_option' you provide is logically bulletproof.
-            - If the subject is 'Logical Reasoning' or contains 'Intelligence'/'Aptitude':
-                * Check for "Syllogism" validity (All A are B, some B are C...).
-                * Verify "Blood Relation" trees manually.
-                * Ensure "Coding-Decoding" patterns are consistent across the entire question.
-                * Do NOT choose an option as correct if it is only "partially" true.
+            VARIETY & REPETITION RULES:
+            - UNIVERSAL DIVERSITY MANDATE: EVERY question in this set MUST cover a completely different sub-topic within '{subject}'.
+            - SUB-TOPIC SHUFFLE: If Subject is Math, do NOT give 2 Algebra questions. Give (1) Geometry, (2) Speed, (3) Probability, etc.
+            - {avoid_context}
+            
+            PHASE 1: DIVERSITY & LOGIC AUDIT
+            1. List {num_questions} distinct sub-topics you will use.
+            2. Solve each mentally to ensure it matches the chosen option.
+            
+            PHASE 2: JSON GENERATION
+            Ensure output is VALID JSON.
             
             STRICT REQUIREMENTS:
-            - REPETITION IS STRICTLY FORBIDDEN: Do NOT generate questions similar to the 'AVOID' list. If you repeat a topic or text, the test is invalid.
-            - STATEMENT-BASED QUESTIONS: If you generate a question with statements (1, 2, 3...), you MUST include the full text of those statements within 'question_text'. Use DOUBLE NEWLINES (\n\n) after the intro text and after EACH statement so they are printed line by line.
-            - The questions MUST feel indistinguishable from an ACTUAL official question paper of {exam_name}.
-            
-            CRITICAL: 
-            - Ensure the output is a VALID JSON list. In the JSON string, backslashes MUST be escaped (e.g., "\\\\frac").
-            - The 'explanation' MUST justify WHY the correct option is right and WHY the others are wrong (concisely).
-            
-            Each question must have:
-            1. question_text: The actual question. (STRICT: Do NOT include formulas, hints, or the method of solving in the question text. The student must use their own knowledge. Formulas belong ONLY in the explanation).
-            2. option_a: First option. (STRICT: ONLY provide the content. DO NOT include the label '(a)' or 'A.' or 'a)').
-            3. option_b: Second option. (STRICT: DO NOT include labels).
-            4. option_c: Third option. (STRICT: DO NOT include labels).
-            5. option_d: Fourth option. (STRICT: DO NOT include labels).
-            6. correct_option: The letter (A, B, C, or D).
-            7. explanation: Subject-specific format:
-                - For 'Mathematics', 'Physics', 'Chemistry': A clear, direct STEP-BY-STEP solution using numbered steps (1., 2., etc.). 
-                  CRITICAL: PROVIDE ONLY THE CALCULATION. NO "Thinking out loud". JUST THE FACTS.
-                - For ALL OTHER subjects (History, Geography, Reasoning, etc.): A single, concise ONE-LINE explanation that PROVES the correct answer.
-            8. appeared_in: A string stating when and where this question was asked (e.g., "CDS 2022").
-               - For 'Current Affairs', if it's a very recent event not yet in a specific exam paper, state "Latest Current Affairs (Month Year)".
-
-            STRICT REQUIREMENTS:
-            - QUESTION COUNT: You MUST generate EXACTLY {num_questions} questions. This is non-negotiable.
+            - QUESTION COUNT: You MUST generate EXACTLY {num_questions} questions.
             - SUBJECT RELEVANCE: Every single question must be directly related to the subject: {subject}. 
-              WARNING: If the subject is History, DO NOT ask math questions. If it is Current Affairs, DO NOT ask about historical events from years ago.
-            - DIVERSITY: Every question must be distinct from the 'PREVIOUSLY GENERATED QUESTIONS' list provided above.
-            - SOURCE: Focus on real PYQs for static subjects. For Current Affairs, focus on the latest news. NEVER return an empty list.
-            - METADATA: Every question MUST specify source in 'appeared_in'.
-            - NO REPETITION: Every question in the list must be distinct.
-            - UNIQUE OPTIONS: All four options (A, B, C, D) MUST be different.
-
-            {avoid_context}
-
-            SUBJECT-SPECIFIC GUIDANCE:
-            - If the subject is 'Current Affairs', generate questions ONLY on high-impact national and international events, awards, appointments, sports, and schemes from the LAST 6 MONTHS (Relative to {current_date}). Do NOT ask previous year questions for Current Affairs.
-            - If the subject is 'History', 'Polity', 'Geography', or 'Economics', focus on factual, analytical, and descriptive questions. Do NOT use mathematical formulas or complex calculations unless it's a specific numerical date or statistic.
-            - If the subject is 'Mathematics', 'Physics', or 'Chemistry', use LaTeX for ALL mathematical expressions, equations, formulas, and symbols.
-            - If the subject name contains 'Reasoning', 'Intelligence', or 'Aptitude' (except 'Quantitative Aptitude' or 'Numerical Ability'), generate STRICTLY logical reasoning questions (verbal or non-verbal logic). DO NOT include mathematical calculations, number system problems, or any questions requiring arithmetic formulas. Focus on patterns, syllogisms, blood relations, directions, coding-decoding, etc.
-            - ALWAYS surround LaTeX with $ for inline (e.g., $x^2$) or $$ for block display.
-
-            Format the output strictly as a JSON list of objects.
+            - NO SPECULATION: Phrases like 'Assuming', 'Perhaps', 'Maybe', or 'Another pattern' are STRICTLY FORBIDDEN. Every step must be factual.
+            - LOGICAL CERTAINTY: Every explanation MUST lead to a definitive conclusion that matches the correct_option. NO TRAILING CONTENT. Ensure every sequence is finished.
+            - SUBJECT-SPECIFIC GUIDANCE:
+                * If the subject is 'Current Affairs', generate questions ONLY on events from the LAST 6 MONTHS (Relative to {current_date}).
+                * If Math/Physics/Science, use LaTeX ($...$ or $$...$$). NEVER use "Statement 1, 2" format.
+                * If Reasoning (except Quant), focus on Patterns, Syllogisms, Blood Relations.
+            
+            Each question MUST have:
+            1. question_text: The complete question. (Math: NO statements).
+            2. option_a/b/c/d: Four distinct options.
+            3. correct_option: A, B, C, or D.
+            4. explanation: Substantive, numbered steps. NO filler. Every step must be a complete sentence.
+            5. appeared_in: Real exam source.
             """
         prompt = ChatPromptTemplate.from_template(prompt_template)
 
@@ -342,36 +362,78 @@ class QuestionGenerator:
                     break
             return None
 
-        questions = None
-        for model in models:
-            logger.info(f"Trying model: {model}...")
-            questions = attempt_generation_with_retry(model, {
-                "subject": subject,
-                "exam_name": exam_name,
-                "num_questions": num_questions,
-                "difficulty": difficulty,
-                "current_date": current_date,
-                "avoid_context": avoid_context
-            })
-            if questions:
-                break
+        def _is_too_similar(q_text, gathered_questions):
+            """Simple keyword overlap check to prevent same-topic questions."""
+            if not gathered_questions: return False
+            words_new = set(re.findall(r'\w+', q_text.lower()))
+            if len(words_new) < 5: return False # Skip for very short ones
+            
+            for gq in gathered_questions:
+                words_old = set(re.findall(r'\w+', gq['question_text'].lower()))
+                overlap = len(words_new.intersection(words_old)) / max(len(words_new), 1)
+                if overlap > 0.45: # 45% overlap is usually the same sub-topic or formula
+                    return True
+            return False
+
+        gathered_questions = []
+        max_total_attempts = 3
+        total_attempts = 0
         
-        if isinstance(questions, list) and len(questions) > 0:
+        # Ensure avoid_questions is a list to prevent NoneType errors
+        if avoid_questions is None:
+            avoid_questions = []
+        
+        while len(gathered_questions) < num_questions and total_attempts < max_total_attempts:
+            total_attempts += 1
+            needed = num_questions - len(gathered_questions)
+            
+            # Update avoid_context with what we just gathered to prevent intra-batch repetition
+            current_avoid_list = list(set(avoid_questions + [q['question_text'] for q in gathered_questions]))
+            avoid_list_str = "\n".join([f"- {q[:60]}..." for q in current_avoid_list[-100:]])
+            local_avoid_context = f"\nCRITICAL: AVOID THESE RECENT TOPICS (TEXT PREFIXES):\n{avoid_list_str}\n"
+
+            for model in models:
+                logger.info(f"Attempting to gather {needed} questions using {model} (Attempt {total_attempts})...")
+                new_qs = attempt_generation_with_retry(model, {
+                    "subject": subject,
+                    "exam_name": exam_name,
+                    "num_questions": needed,
+                    "difficulty": difficulty,
+                    "current_date": current_date,
+                    "avoid_context": local_avoid_context
+                })
+                
+                if new_qs and isinstance(new_qs, list):
+                    for q in new_qs:
+                        if len(gathered_questions) >= num_questions: break
+                        if not _is_too_similar(q['question_text'], gathered_questions):
+                            gathered_questions.append(q)
+                        else:
+                            logger.info(f"Rejected similar question: {q['question_text'][:50]}...")
+                    
+                    if len(gathered_questions) >= num_questions:
+                        break
+            
+            if len(gathered_questions) >= num_questions:
+                break
+
+        if gathered_questions:
             # Clean and add unique IDs
-            for i, q in enumerate(questions):
+            final_qs = gathered_questions[:num_questions]
+            for i, q in enumerate(final_qs):
                 q['id'] = f"ai_q_{i}"
                 for key in ['question_text', 'option_a', 'option_b', 'option_c', 'option_d', 'explanation']:
                     if key in q:
                         q[key] = self._clean_latex(q[key])
-                        # Extra cleaning for explanations to prevent loops and hallucinations
                         if key == 'explanation':
                             q[key] = self._clean_explanation(q[key])
-                        # Extra strip for options to prevent double labeling
                         if key.startswith('option_'):
                             q[key] = self._strip_option_label(q[key])
-            return questions
+                        if key == 'question_text':
+                            q[key] = q[key].replace('\\n', '\n').replace('\n', '  \n')
+            return final_qs
         
-        logger.error("Final result: Empty list returned.")
+        logger.error("Final result: Failed to gather any valid questions.")
         return []
 
     def translate_questions(self, questions, target_language):

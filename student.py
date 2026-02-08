@@ -99,8 +99,10 @@ def exam_config_view():
                     try:
                         generator = QuestionGenerator()
                         previous_submissions = get_submissions(st.session_state.username)
-                        avoid_texts = [q['question_text'] for sub in previous_submissions if sub.get('subject') == subject for q in sub.get('questions_data', [])]
+                        # Avoid recently generated questions from ALL subjects to ensure maximum diversity across sessions
+                        avoid_texts = [q['question_text'] for sub in previous_submissions for q in sub.get('questions_data', [])]
                         
+                        # Note: QuestionGenerator.generate_questions will handle truncating this to the last 100
                         questions = generator.generate_questions(subject, exam_name, int(num_questions), difficulty=difficulty, avoid_questions=avoid_texts)
                         if questions:
                             st.session_state.exam_config = {"subject": subject, "exam_name": exam_name, "num_questions": num_questions, "timer_minutes": timer_minutes, "difficulty": difficulty, "original_language": language}
@@ -196,30 +198,37 @@ def exam_session_view(questions, config):
         q = questions[idx]
         responses = st.session_state.get("student_responses", {})
         
-        st.write(f"**Question {idx + 1} of {len(questions)}**")
-        st.progress((idx + 1) / len(questions))
-        
-        with st.container(border=True):
-            st.markdown(f"**Q{idx+1}:**  \n{q['question_text']}")
-            choice = st.radio("Options", ["A", "B", "C", "D"], key=f"q_{q['id']}", index=None if q['id'] not in responses else ["A", "B", "C", "D"].index(responses[q['id']]), format_func=lambda x: f"{x}) {q[f'option_{x.lower()}']}")
-            if choice: responses[q['id']] = choice
-            st.session_state.student_responses = responses
-
-        c1, c2, c3 = st.columns(3)
-        if c1.button("⬅️ Previous", disabled=(idx == 0)):
-            st.session_state.current_q_index -= 1
-            st.rerun()
-        if c2.button("Next ➡️") if idx < len(questions) - 1 else False:
-            st.session_state.current_q_index += 1
-            st.rerun()
-        if c3.button("🚀 Submit", type="primary") if idx == len(questions) - 1 else False:
-            st.session_state.show_submit_confirm = True
-
         if st.session_state.get("show_submit_confirm"):
-            st.warning("Confirm Submission?")
-            if st.checkbox("I am ready"):
-                if st.button("Confirm"): process_submission()
-            if st.button("Cancel"): del st.session_state.show_submit_confirm; st.rerun()
+            with st.container(border=True):
+                st.warning("⚠️ **Confirm Submission?**")
+                st.write("You have reached the end of the exam. Are you ready to submit your responses?")
+                if st.checkbox("I have reviewed my answers and am ready to submit.", key="confirm_check"):
+                    if st.button("🚀 Final Submit", type="primary", use_container_width=True):
+                        process_submission()
+                st.divider()
+                if st.button("🔙 Back to Questions", use_container_width=True):
+                    del st.session_state.show_submit_confirm
+                    st.rerun()
+        else:
+            st.write(f"**Question {idx + 1} of {len(questions)}**")
+            st.progress((idx + 1) / len(questions))
+            
+            with st.container(border=True):
+                st.markdown(f"**Q{idx+1}:**  \n{q['question_text']}")
+                choice = st.radio("Options", ["A", "B", "C", "D"], key=f"q_{q['id']}", index=None if q['id'] not in responses else ["A", "B", "C", "D"].index(responses[q['id']]), format_func=lambda x: f"{x}) {q[f'option_{x.lower()}']}")
+                if choice: responses[q['id']] = choice
+                st.session_state.student_responses = responses
+
+            c1, c2, c3 = st.columns(3)
+            if c1.button("⬅️ Previous", disabled=(idx == 0)):
+                st.session_state.current_q_index -= 1
+                st.rerun()
+            if c2.button("Next ➡️") if idx < len(questions) - 1 else False:
+                st.session_state.current_q_index += 1
+                st.rerun()
+            if c3.button("🚀 Submit", type="primary") if idx == len(questions) - 1 else False:
+                st.session_state.show_submit_confirm = True
+                st.rerun()
 
     exam_interface()
 
